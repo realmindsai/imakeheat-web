@@ -95,6 +95,15 @@ getCurrentSourceTimeSec(trim: TrimPoints): number {
 
 Whenever `setEffect({speed})`, `setTrim(...)`, or `seek(...)` arrives mid-play, the engine snapshots the current source-time into `playStartedAtSrcSec`, resets `playStartedAt = ctx.currentTime`, then sends the corresponding port message. After that the formula reads the new params and stays correct.
 
+**Pause/resume:**
+
+- `pause()`: compute `pausedSourceTimeSec = getCurrentSourceTimeSec(trim)`; clear `isPlaying`; post `{type:'pause'}` to the worklet (which holds its `readPos` and emits silence).
+- `play()` from a paused state: set `playStartedAtSrcSec = pausedSourceTimeSec`, `playStartedAt = ctx.currentTime`, set `isPlaying`; post `{type:'play', offsetSec: pausedSourceTimeSec, trim, fx}`. The worklet resumes from the same `readPos` it was holding (the `offsetSec` is mainly a safety re-anchor in case the engine and worklet drifted while paused).
+
+The shape mirrors today's `engine.ts:46`/`:82`, but every accumulator is in *source-time* rather than wall-time. There is no place that mixes the two.
+
+**Engine and worklet wrap independently** — the worklet wraps `readPos` modulo the trim span (the actual sample read), while the engine wraps its predictor (the UI position). Both must wrap or they desync. The `position` message (every ~20 ms, §5.6) is the reconciliation channel; brief disagreement near a wrap boundary is acceptable for UI purposes.
+
 ### 4.4 `graph.ts` changes
 
 - `applyPitch` is removed (pitch lives in the worklet).
@@ -118,7 +127,7 @@ export const defaultEffects: EffectParams = {
 
 ### 4.6 IDB / `ExportRecord` migration
 
-`ExportRecord.fxSnapshot: EffectParams` — pre-existing records on disk lack `speed`. Read-time migration in `listExports`/`getExport`:
+`ExportRecord.fxSnapshot: EffectParams` — pre-existing records on disk lack `speed`. Read-time normalisation in `listExports`, applied at every read so callers always see a fully-typed `EffectParams`:
 
 ```ts
 function normalize(rec: ExportRecord): ExportRecord {
@@ -128,7 +137,9 @@ function normalize(rec: ExportRecord): ExportRecord {
 }
 ```
 
-No IDB schema bump. Records are written back with the new field only when the user touches them (e.g., `toggleStarred`). No explicit "replay these settings" feature exists today, so the field is descriptive metadata and read-time normalisation is sufficient.
+`toggleStarred` (`src/store/exports.ts:84`) reads the raw record from IDB and re-puts it; it must call `normalize()` before the `put` so the user touching a star also opportunistically writes back the new field. Without this step, starred records would round-trip un-migrated and the `EffectParams` type would be lying about disk state.
+
+No IDB schema bump. Read-time normalisation is the binding migration path; the `toggleStarred` write-back is a best-effort opportunistic upgrade. No "replay-from-snapshot" feature exists today, so `fxSnapshot` is descriptive metadata and this is sufficient.
 
 ## 5. Worklet internals (`src/audio/worklets/wsola.worklet.ts`)
 
@@ -207,7 +218,7 @@ The worklet wraps `readPos` modulo the trim span: when `readPos >= trim.endSec *
 
 1. **Splice clicks at `speed < 0.7`.** The cross-correlation search is the only thing keeping the OLA from sounding like a digital chorus in this region. The ±128-sample search window is tuned for it. Tested directly in §7.2.
 2. **Pitch-shift quantisation.** Linear interpolation is fine for ±12 st (max factor 2). No need for cubic or sinc unless integration tests show audible aliasing — which they will not at this range.
-3. **Neutral path must match BufferSource output.** The bypass story depends on the neutral fast-path producing audio indistinguishable from the current `BufferSource → …` path. If this is not byte-identical (e.g., a 128-sample latency we haven't accounted for), the spec's parity test escalates from "byte-identical" to "perceptually identical to within X dB" and we revisit.
+3. **Neutral path must match BufferSource output.** The bypass story depends on the neutral fast-path producing audio indistinguishable from the current `BufferSource → …` path. The §7.1 unit test ("neutral fast-path is sample-identical") is the canary and is allowed to assert equality only modulo a *single, documented* startup-priming offset (zero or one block); any larger offset, or any non-zero deviation after the priming window, fails the test and forces the spec back open. The §7.2 render-parity integration test is the binding merge gate — it must pass byte-identically end-to-end.
 
 ## 6. Math: pitch + stretch decomposition
 
@@ -234,7 +245,7 @@ The shim already exists; `bitcrusher.test.ts` and `srhold.test.ts` instantiate p
 
 | Test | Assertion |
 |---|---|
-| neutral fast-path is sample-identical | At `speed=1, pitch=0`: feed a 4096-sample ramp, output equals input within float epsilon |
+| neutral fast-path is sample-identical | At `speed=1, pitch=0`: feed a 4096-sample ramp; after a startup-priming offset of at most one 128-sample block (documented as a constant in the test), output samples equal input samples within float epsilon. Any larger offset, or any deviation after priming, fails. |
 | stretch length is correct | At `speed=0.5`, feed `N` samples → expect `2N` samples out (within ±1 frame); at `speed=2`, expect `N/2` |
 | pitch shift, no stretch | At `speed=1, pitch=+12` on 220 Hz sine: peak FFT bin shifts to 440 Hz |
 | pitch + stretch combined | At `speed=0.5, pitch=+12` on 220 Hz: output is 2× as long *and* peaks at 440 Hz — proves decoupling |
@@ -278,6 +289,7 @@ Extends `tests/integration/runner.ts` to take `speed` in `EffectParams` and exer
 - `tests/unit/wsola.test.ts` — new
 - `tests/unit/speed.test.ts` — new (3 cases)
 - `tests/integration/runner.ts` — accept `speed` in payload
+- `tests/integration/filter-attenuation.spec.ts`, `tests/integration/stereo-symmetry.spec.ts` — pass `speed: 1` in any `EffectParams` literals so they typecheck against the new shape
 - `tests/integration/wsola-stretch.spec.ts` — new (5 cases)
 - `tests/e2e/speed-slider.spec.ts` — new (2 cases)
 
