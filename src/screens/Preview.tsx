@@ -1,7 +1,6 @@
 // ABOUTME: Preview screen — review source audio with trim handles before applying effects.
 // ABOUTME: Shows waveform, source metadata, playback controls, and trim points.
 
-import { useState } from 'react'
 import { Eyebrow } from '../components/Eyebrow'
 import { Wordmark } from '../components/Wordmark'
 import { TopBar } from '../components/TopBar'
@@ -16,7 +15,7 @@ import { navigate } from '../lib/router'
 export function Preview() {
   const source = useSessionStore((s) => s.source)
   const trim = useSessionStore((s) => s.trim)
-  const [playing, setPlaying] = useState(false)
+  const playing = useSessionStore((s) => s.playback.isPlaying)
 
   if (!source) {
     navigate('home')
@@ -26,10 +25,10 @@ export function Preview() {
   const togglePlay = async () => {
     if (playing) {
       engine.pause()
-      setPlaying(false)
+      useSessionStore.getState().setPlayback({ isPlaying: false })
     } else {
       await engine.play(trim, defaultEffects)
-      setPlaying(true)
+      useSessionStore.getState().setPlayback({ isPlaying: true })
     }
   }
 
@@ -72,6 +71,7 @@ export function Preview() {
             startSec={trim.startSec}
             endSec={trim.endSec}
             onChange={setTrim}
+            buffer={source.buffer}
           />
         </div>
         <div className="mt-3 grid grid-cols-3 gap-[10px] border-t border-rmai-border pt-3">

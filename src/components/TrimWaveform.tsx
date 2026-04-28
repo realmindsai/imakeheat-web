@@ -3,15 +3,17 @@
 
 import { useRef, useState, useEffect } from 'react'
 import { StereoWaveform } from './StereoWaveform'
+import type { AudioBufferLike } from '../audio/types'
 
 interface Props {
   durationSec: number
   startSec: number
   endSec: number
   onChange(startSec: number, endSec: number): void
+  buffer?: AudioBufferLike | null
 }
 
-export function TrimWaveform({ durationSec, startSec, endSec, onChange }: Props) {
+export function TrimWaveform({ durationSec, startSec, endSec, onChange, buffer = null }: Props) {
   const ref = useRef<HTMLDivElement | null>(null)
   const [dragging, setDragging] = useState<'start' | 'end' | null>(null)
 
@@ -40,7 +42,7 @@ export function TrimWaveform({ durationSec, startSec, endSec, onChange }: Props)
 
   return (
     <div ref={ref} className="relative">
-      <StereoWaveform />
+      <StereoWaveform buffer={buffer} />
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute inset-y-0 left-0 bg-rmai-bg/60" style={{ width: `${startPct}%` }} />
         <div className="absolute inset-y-0 right-0 bg-rmai-bg/60" style={{ width: `${100 - endPct}%` }} />

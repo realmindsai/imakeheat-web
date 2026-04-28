@@ -22,7 +22,7 @@ export function Effects() {
   const source = useSessionStore((s) => s.source)
   const trim = useSessionStore((s) => s.trim)
   const fx = useSessionStore((s) => s.effects)
-  const [playing, setPlaying] = useState(false)
+  const playing = useSessionStore((s) => s.playback.isPlaying)
   const [latencyMs, setLatencyMs] = useState(0)
   const [progress, setProgress] = useState(0)
   const playheadRaf = useRef<number | null>(null)
@@ -66,10 +66,10 @@ export function Effects() {
   const togglePlay = async () => {
     if (playing) {
       engine.pause()
-      setPlaying(false)
+      useSessionStore.getState().setPlayback({ isPlaying: false })
     } else {
       await engine.play(trim, fx)
-      setPlaying(true)
+      useSessionStore.getState().setPlayback({ isPlaying: true })
     }
   }
 
@@ -169,6 +169,7 @@ export function Effects() {
               startSec={trim.startSec}
               endSec={trim.endSec}
               onChange={setTrim}
+              buffer={source.buffer}
             />
           </div>
         </div>
