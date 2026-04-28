@@ -883,17 +883,32 @@ git commit -m "feat: WSOLA pitch shift via linear resample (decoupled from speed
 
 Up to now, the analysis read pointer advances by `Ha` regardless of phase alignment. WSOLA's contribution is to *search* a small window around the expected position for the best phase match against the previously written synthesis frame. This drops splice-related artifacts dramatically at low speeds.
 
-- [ ] **Step 1: Write failing test**
+- [ ] **Step 1: Write failing test (spectral concentration)**
+
+A 4-tap moving-average smoother on a pure sine attenuates almost nothing, so an `rmsSm/rmsRaw` test would not actually fail without correlation. Use a spectral concentration test instead: the energy of a pure sine should be concentrated in a narrow band around its true frequency, even after WSOLA stretch. Splice clicks broaden the spectrum.
 
 Append to `tests/unit/wsola.test.ts`:
 
 ```ts
+// Crude single-bin DFT magnitude. Returns |X(f)| for one freq bin.
+function dftMag(buf: Float32Array, freq: number, sr: number): number {
+  let re = 0, im = 0
+  const w = (-2 * Math.PI * freq) / sr
+  for (let i = 0; i < buf.length; i++) {
+    re += buf[i] * Math.cos(w * i)
+    im += buf[i] * Math.sin(w * i)
+  }
+  return Math.sqrt(re * re + im * im) / buf.length
+}
+
+function totalEnergy(buf: Float32Array): number {
+  let s = 0
+  for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i]
+  return s
+}
+
 describe('WSOLAProcessor — cross-correlation search', () => {
-  it('chosen analysis offset for a periodic signal lands near the period', () => {
-    // Pure sine at 100 Hz @ 48k → period = 480 samples. Expected best splice
-    // is at the period, modulo phase wrap. We test indirectly: at speed=0.5,
-    // pure sine should come out clean (low THD), which is impossible without
-    // correlation alignment.
+  it('at speed=0.5 on a 100 Hz sine, energy concentrates in a narrow band around 100 Hz', () => {
     const proc = new WSOLAProcessor()
     const input = sine(8192, 100, SR)
     postToProcessor(proc, { type: 'load', channels: [input], sampleRate: SR })
@@ -903,45 +918,49 @@ describe('WSOLAProcessor — cross-correlation search', () => {
       fx: { speed: 0.5, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
     })
     const out = drainBlocks(proc, 1, 128)
-    // Skip 1024 samples of priming; measure THD by comparing rms inside vs
-    // outside a narrow band around 100 Hz. Cheap proxy: assert energy in the
-    // first half-period of zero crossings is concentrated and not chaotic.
-    const measured = dominantFreqHz(out[0].subarray(1024, 8192), SR)
-    expect(measured).toBeGreaterThan(95)
-    expect(measured).toBeLessThan(105)
-    // Reject high-frequency junk: low-pass via 4-tap moving average should
-    // not significantly attenuate the signal if it's a clean 100 Hz sine.
-    const smoothed = new Float32Array(out[0].length - 4)
-    for (let i = 0; i < smoothed.length; i++) {
-      smoothed[i] = (out[0][i] + out[0][i+1] + out[0][i+2] + out[0][i+3]) / 4
-    }
-    const rmsOut = rms(out[0].subarray(1024, 8192))
-    const rmsSm = rms(smoothed.subarray(1024, 8192))
-    expect(rmsSm / rmsOut).toBeGreaterThan(0.95)
+    // Skip 1024 priming samples; analyse a 4096-sample window in the steady-state.
+    const window = out[0].subarray(1024, 5120)
+    const inBand =
+      dftMag(window, 95, SR) ** 2 +
+      dftMag(window, 100, SR) ** 2 +
+      dftMag(window, 105, SR) ** 2
+    // Total energy normalisation: total power ≈ ∫|X(f)|^2 df, but the proxy
+    // we use is simply (mean-square of the time-domain signal), which by
+    // Parseval is proportional to the integrated spectrum.
+    const total = totalEnergy(window) / window.length
+    // Without correlation, splice clicks broaden the spectrum and the
+    // in-band ratio drops below 0.5. With correlation it stays well above.
+    expect(inBand / total).toBeGreaterThan(0.6)
   })
 })
 ```
+
+Run Task 5's implementation against this test before adding correlation, to *confirm it actually fails*. If the test passes without correlation, tighten the threshold (try 0.8 or 0.9) until it fails — then add correlation and confirm it passes.
 
 - [ ] **Step 2: Run, confirm failure**
 
 Run: `npx vitest run tests/unit/wsola.test.ts`
 Expected: FAIL — without correlation, the OLA introduces splice clicks; the smoothed/raw rms ratio drops below 0.95.
 
-- [ ] **Step 3: Implement cross-correlation search**
+- [ ] **Step 3: Implement cross-correlation search against the synthesis tail**
+
+Canonical WSOLA correlates the *head* of each candidate analysis frame against the *tail of the most recently emitted synthesis frame* (i.e. content already committed to the OLA ring just behind the current write head). This way splice continuity is enforced against what was actually output, not against a prior input snippet.
 
 Add constants:
 
 ```ts
-const SEARCH_DELTA = 128 // ± samples around expected analysis position
+const SEARCH_DELTA = 128       // ± samples around expected analysis position
+const TAIL_LEN = 2 * SEARCH_DELTA // length of synthesis-tail window used for correlation
 ```
 
 Add state:
 
 ```ts
-private prevTail: Float32Array[] = [] // last SEARCH_DELTA*2 samples emitted, per channel
+private synthTail: Float32Array[] = []  // last TAIL_LEN samples committed to olaRing per channel
+private hasSynthTail = false             // false until the first frame has been emitted
 ```
 
-Initialise `prevTail` on `load`/`play`/`seek`: `this.prevTail = msg.channels.map(() => new Float32Array(SEARCH_DELTA * 2))`.
+Initialise on `load`/`play`/`seek`: `this.synthTail = msg.channels.map(() => new Float32Array(TAIL_LEN))` and set `this.hasSynthTail = false`.
 
 Replace the analysis-position computation in `synthesizeOneFrame()`:
 
@@ -953,10 +972,7 @@ private synthesizeOneFrame(): void {
   if (channels === 0) return
 
   const expected = this.readPos
-  let bestPos = expected
-  if (this.prevTail.length > 0 && this.prevTail[0].some((v) => v !== 0)) {
-    bestPos = this.searchBestAlignment(expected)
-  }
+  const bestPos = this.hasSynthTail ? this.searchBestAlignment(expected) : expected
   const startInt = Math.floor(bestPos)
   const span = Math.max(1, this.trimEnd - this.trimStart)
 
@@ -970,13 +986,23 @@ private synthesizeOneFrame(): void {
       const ringIdx = (this.olaWritePos + n) % RING
       ring[ringIdx] += v * this.hann[n]
     }
-    // Update prevTail with the last 2*SEARCH_DELTA windowed samples we just wrote
-    for (let n = 0; n < SEARCH_DELTA * 2; n++) {
-      let p = startInt + (N - SEARCH_DELTA * 2) + n
-      if (p >= this.trimEnd) p = this.trimStart + ((p - this.trimStart) % span)
-      this.prevTail[c][n] = (inCh[p] ?? 0) * this.hann[(N - SEARCH_DELTA * 2) + n]
+  }
+
+  // Capture the synthesis tail: the last TAIL_LEN samples just written to
+  // the ring, in (already-windowed, already-overlap-added) output space —
+  // divided by the windowEnv so the tail is comparable against raw input
+  // candidates during the next call's correlation.
+  for (let c = 0; c < channels; c++) {
+    const ring = this.olaRing[c]
+    const writeEnd = this.olaWritePos + N
+    for (let n = 0; n < TAIL_LEN; n++) {
+      const ringIdx = (writeEnd - TAIL_LEN + n + RING) % RING
+      const envIdx = (writeEnd - TAIL_LEN + n + HS * 1000) % HS // safely positive
+      this.synthTail[c][n] = ring[ringIdx] / Math.max(this.windowEnv[envIdx], 1e-6)
     }
   }
+  this.hasSynthTail = true
+
   this.olaWritePos += HS
   this.readPos = bestPos + Ha
   if (this.readPos >= this.trimEnd) {
@@ -985,8 +1011,11 @@ private synthesizeOneFrame(): void {
 }
 
 private searchBestAlignment(expected: number): number {
-  // Cross-correlate the head of the candidate analysis frame against prevTail
-  // (the tail of the previous synthesis frame, in unwindowed input space).
+  // For each candidate offset, take TAIL_LEN raw input samples starting at
+  // (cand) and correlate against the recent synthesis tail. Highest
+  // normalised cross-correlation wins. The candidate's "head" matches the
+  // tail of what's already been emitted, so the next OLA splice has phase
+  // continuity.
   const span = Math.max(1, this.trimEnd - this.trimStart)
   const lo = Math.max(this.trimStart, Math.floor(expected) - SEARCH_DELTA)
   const hi = Math.min(this.trimEnd - N, Math.floor(expected) + SEARCH_DELTA)
@@ -998,11 +1027,12 @@ private searchBestAlignment(expected: number): number {
     let normB = 0
     for (let c = 0; c < this.channels.length; c++) {
       const inCh = this.channels[c]
-      for (let n = 0; n < SEARCH_DELTA * 2; n++) {
+      const tail = this.synthTail[c]
+      for (let n = 0; n < TAIL_LEN; n++) {
         let p = cand + n
         if (p >= this.trimEnd) p = this.trimStart + ((p - this.trimStart) % span)
         const a = inCh[p] ?? 0
-        const b = this.prevTail[c][n]
+        const b = tail[n]
         score += a * b
         normA += a * a
         normB += b * b
@@ -1018,6 +1048,8 @@ private searchBestAlignment(expected: number): number {
   return bestPos
 }
 ```
+
+The correlation target (`synthTail`) is now what the listener actually heard, not a copy of input. This is canonical WSOLA.
 
 - [ ] **Step 4: Run, confirm passing**
 
@@ -1160,9 +1192,14 @@ describe('WSOLAProcessor — control messages', () => {
     drainBlocks(proc, 1, 16)
     postToProcessor(proc, { type: 'seek', sourceTimeSec: 0.5 })
     const after = drainBlocks(proc, 1, 16)
-    // First sample after seek should not be a huge step; allow up to one full
-    // sample swing but not more (would indicate carry-over splice).
-    expect(Math.abs(after[0][0])).toBeLessThan(1.0)
+    // After seek the OLA state is dropped, so the first ~N samples are
+    // ramp-in from zero. Assert that:
+    //   (a) the first sample is small (no carry-over from before seek), and
+    //   (b) sample-to-sample steps stay small (no splice click).
+    expect(Math.abs(after[0][0])).toBeLessThan(0.05)
+    for (let i = 1; i < 256; i++) {
+      expect(Math.abs(after[0][i] - after[0][i - 1])).toBeLessThan(0.05)
+    }
   })
 })
 ```
@@ -1208,36 +1245,24 @@ git commit -m "feat: WSOLA seek/pause/setFx mid-process semantics"
 - Modify: `src/audio/worklets/wsola.worklet.ts`
 - Modify: `tests/unit/wsola.test.ts`
 
-- [ ] **Step 1: Extend `processor-shim.ts` postMessage to capture sent messages**
+- [ ] **Step 1: Write failing test (with inline port-spy)**
 
-The existing shim has `postMessage: () => {}` which discards messages. We need to spy on it for the test. Add a recording variant inline in the test rather than modifying the shim:
+Append to `tests/unit/wsola.test.ts`. The spy replaces `proc.port` after construction but preserves the original `onmessage` so that `postToProcessor` (which reads `proc.port.onmessage`) keeps working unchanged:
 
 ```ts
-function makeRecordingPort() {
+function spyPortPosts(proc: any): any[] {
   const sent: any[] = []
-  return {
-    sent,
-    install(proc: any) {
-      const orig = proc.port
-      proc.port = {
-        onmessage: orig.onmessage,
-        postMessage: (data: any) => { sent.push(data) },
-      }
-    },
+  proc.port = {
+    onmessage: proc.port.onmessage, // preserve handler set in constructor
+    postMessage: (data: any) => sent.push(data),
   }
+  return sent
 }
-```
 
-- [ ] **Step 2: Write failing test**
-
-Append to `tests/unit/wsola.test.ts`:
-
-```ts
 describe('WSOLAProcessor — position reporting', () => {
   it('emits position messages periodically while playing', () => {
     const proc = new WSOLAProcessor()
-    const port = makeRecordingPort()
-    port.install(proc)
+    const sent = spyPortPosts(proc)
     const input = sine(SR, 440, SR)
     postToProcessor(proc, { type: 'load', channels: [input], sampleRate: SR })
     postToProcessor(proc, {
@@ -1245,42 +1270,49 @@ describe('WSOLAProcessor — position reporting', () => {
       trim: { startSec: 0, endSec: 1 },
       fx: { speed: 1, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
     })
-    drainBlocks(proc, 1, 32) // 32 * 128 = 4096 samples = ~85ms
-    const positions = port.sent.filter((m) => m.type === 'position')
+    drainBlocks(proc, 1, 32) // 32 * 128 = 4096 samples ≈ 85 ms wall-clock at 48k
+    const positions = sent.filter((m) => m.type === 'position')
     expect(positions.length).toBeGreaterThan(0)
     const last = positions[positions.length - 1]
     expect(last.readPosSec).toBeGreaterThan(0)
     expect(last.readPosSec).toBeLessThan(0.1)
   })
+
+  it('does not emit position messages while paused', () => {
+    const proc = new WSOLAProcessor()
+    const sent = spyPortPosts(proc)
+    const input = sine(SR, 440, SR)
+    postToProcessor(proc, { type: 'load', channels: [input], sampleRate: SR })
+    postToProcessor(proc, {
+      type: 'play', offsetSec: 0,
+      trim: { startSec: 0, endSec: 1 },
+      fx: { speed: 1, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
+    })
+    drainBlocks(proc, 1, 8)
+    sent.length = 0
+    postToProcessor(proc, { type: 'pause' })
+    drainBlocks(proc, 1, 64) // long pause window
+    expect(sent.filter((m) => m.type === 'position').length).toBe(0)
+  })
 })
 ```
 
-Note: `postToProcessor` reads `proc.port.onmessage`, but our recording port replaces `port` after install — restore the original `onmessage` reference. Hence the `install` method preserves it. Re-install before each post if needed; in this test `load`/`play` are posted *after* install, so we re-route `postToProcessor` calls through the new port:
-
-```ts
-function postViaPort(port: any, proc: any, data: unknown) {
-  // bypass the recording shim's onmessage hand-off — call the processor directly.
-  const handler = (proc as any).port.onmessage
-  handler({ data } as MessageEvent)
-}
-```
-
-Adjust the test to use `postViaPort` after `install`.
-
-- [ ] **Step 3: Run, confirm failure**
+- [ ] **Step 2: Run, confirm failure**
 
 Run: `npx vitest run tests/unit/wsola.test.ts`
-Expected: FAIL — no `position` messages emitted.
+Expected: the "emits position messages" test FAILS (no posts); the "does not emit while paused" test passes by accident (no posts at all).
 
-- [ ] **Step 4: Implement position reporting**
+- [ ] **Step 3: Implement position reporting on the playing path only**
 
-Add a counter and a post-every-N-blocks emission inside `process()` (at the bottom, before `return true`):
+Add a counter and a post-every-N-blocks emission. The post must be guarded so it only fires when the worklet is actively rendering audio — never during `'idle'`/`'paused'`/`channels.length===0` early-returns:
 
 ```ts
 private blocksSinceReport = 0
 private static readonly REPORT_EVERY_BLOCKS = 8 // ~21 ms at 48k
 
-// ... in process(), after successful render:
+// Inside process(), at the *bottom* of both the neutral and non-neutral
+// render branches (i.e. after audio has actually been written to output),
+// before the final `return true`:
 this.blocksSinceReport++
 if (this.blocksSinceReport >= WSOLAProcessor.REPORT_EVERY_BLOCKS) {
   this.blocksSinceReport = 0
@@ -1291,18 +1323,20 @@ if (this.blocksSinceReport >= WSOLAProcessor.REPORT_EVERY_BLOCKS) {
 }
 ```
 
-Reset `blocksSinceReport` to 0 on `pause`/`seek`/`unload` so the first post-resume position is fresh.
+Crucially, the early-return paths (state !== 'playing', no channels) `return true` *before* this block runs, so paused/silent ticks emit no message — that's the second test.
 
-- [ ] **Step 5: Run, confirm passing**
+Also reset `blocksSinceReport = 0` on `pause`/`seek`/`unload` so the first post-resume position is fresh, and on `play` so post timing is deterministic.
+
+- [ ] **Step 4: Run, confirm passing**
 
 Run: `npx vitest run tests/unit/wsola.test.ts`
-Expected: PASS.
+Expected: PASS, both new tests.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/audio/worklets/wsola.worklet.ts tests/unit/wsola.test.ts
-git commit -m "feat: WSOLA emits position messages every ~21ms"
+git commit -m "feat: WSOLA emits position messages every ~21ms (playing path only)"
 ```
 
 ---
@@ -1464,6 +1498,9 @@ async loadFromBlob(blob: Blob): Promise<AudioBuffer> {
   const decoded = await this.ctx!.decodeAudioData(buf)
   this.currentBuffer = decoded
   this.graph!.loadBuffer(decoded)
+  // Anchors initialise to the natural "before any trim is set" position.
+  // setTrim(...) and play(...) below normalise these to trim.startSec when
+  // the first trim arrives.
   this.pausedSourceTimeSec = 0
   this.playStartedAtSrcSec = 0
   this.isPlaying = false
@@ -1482,18 +1519,34 @@ async play(trim: TrimPoints, fx: EffectParams): Promise<void> {
   this.lastTrim = trim
   this.lastFx = fx
   this.graph.applyEffects(fx)
-  const offsetSec = trim.startSec + (this.pausedSourceTimeSec - trim.startSec)
+
+  // Resume from where pause/seek left us, clamped into the current trim window.
+  // First play after load has pausedSourceTimeSec === 0, which clamps up to
+  // trim.startSec when trim.startSec > 0. Importantly we write the *clamped*
+  // value back to pausedSourceTimeSec so that getCurrentSourceTimeSec(...)
+  // returns the right anchor before any pause has occurred.
+  const offsetSec = Math.max(
+    trim.startSec,
+    Math.min(trim.endSec, this.pausedSourceTimeSec || trim.startSec),
+  )
+  this.pausedSourceTimeSec = offsetSec
+  this.playStartedAtSrcSec = offsetSec
+
   this.graph.player.port.postMessage({
     type: 'play',
-    offsetSec: Math.max(trim.startSec, Math.min(trim.endSec, offsetSec)),
+    offsetSec,
     trim,
     fx,
   })
   this.playStartedAt = this.ctx.currentTime
-  this.playStartedAtSrcSec = offsetSec
   this.isPlaying = true
 }
 ```
+
+Notes for the implementer:
+- The original spec § 4.3 wrote `offsetSec = trim.startSec + (pausedSourceTimeSec − trim.startSec)`. Algebraically equal to `pausedSourceTimeSec`, so we use the simpler form and clamp explicitly.
+- Writing the clamped value back to `pausedSourceTimeSec` ensures `getCurrentSourceTimeSec(trim)` returns `trim.startSec` (not `0`) when called before the first pause, matching today's engine semantics (`engine.ts:135` returns `trim.startSec + pausedOffsetSec`).
+- The worklet receives `offsetSec` as the absolute source-time anchor; if it falls outside `[trim.startSec, trim.endSec)`, the worklet's existing trim-clamp on `setTrim` does the same job in reverse. This is intentional symmetry.
 
 - [ ] **Step 5: Rewrite `pause`**
 
@@ -1710,6 +1763,8 @@ This is the binding merge gate per spec §9. It runs the *current* `renderOfflin
 
 The current `runner.ts` exposes `window.__run({kind:'render', ...})`. Extend it to accept `kind: 'render-legacy'` that builds a BufferSource-based chain (the old code) and renders. This serves as the parity baseline.
 
+The legacy path imports `pitchRateFromSemitones` from `src/audio/pitch.ts`. That file is intentionally **kept** by this PR (spec §8); only the import in `src/audio/graph.ts` is removed in Task 13. The runner therefore continues to import `pitch.ts` directly.
+
 Replace `tests/integration/runner.ts`:
 
 ```ts
@@ -1863,6 +1918,17 @@ test('neutral parity: WSOLA path equals legacy BufferSource path', async ({ page
   expect(result.legacy.pcm[0].length).toBeGreaterThan(0)
   // Lengths within ±1 priming block.
   expect(Math.abs(result.wsola.pcm[0].length - result.legacy.pcm[0].length)).toBeLessThanOrEqual(PRIMING)
+
+  // Both renders must contain meaningful audio — protects against the
+  // false-positive where one path silently emits zeros (e.g. detached buffer
+  // after transfer, missing worklet load).
+  function rms(buf: number[]): number {
+    let s = 0
+    for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i]
+    return Math.sqrt(s / buf.length)
+  }
+  expect(rms(result.wsola.pcm[0])).toBeGreaterThan(0.05)
+  expect(rms(result.legacy.pcm[0])).toBeGreaterThan(0.05)
 
   // Compare from the latest priming offset onward, in the overlap region.
   const start = PRIMING
@@ -2143,30 +2209,38 @@ git commit -m "test(integration): WSOLA THD, transient, stereo, filter-chain"
 **Files:**
 - Create: `tests/e2e/speed-slider.spec.ts`
 
-- [ ] **Step 1: Test 1 — slider updates store and engine**
+The existing e2e test (`tests/e2e/upload-and-export.spec.ts`) uploads `tests/fixtures/sine-440-1s.wav`, clicks "to effects", clicks bit-depth `4`, clicks "render & export", and asserts a row appears on the exports screen with `_crushed_` and `.wav`. It does **not** decode the rendered WAV. Mirror that flow exactly; do not reach for IDB-blob extraction.
+
+- [ ] **Step 1: Test 1 — speed slider updates the displayed value**
+
+Create `tests/e2e/speed-slider.spec.ts`:
 
 ```ts
 import { test, expect } from '@playwright/test'
-import path from 'path'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-test('speed slider drives playback speed', async ({ page }) => {
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+test('speed slider drives the displayed multiplier and reaches 0.50x at the low end', async ({ page }) => {
   await page.goto('/')
 
-  // Upload a file. The Home screen has a file input; the existing e2e
-  // tests/e2e/upload-and-export.spec.ts shows the pattern. Reuse the
-  // same WAV fixture if one exists; otherwise inject a synthetic one.
-  // For this assertion we just need a long-enough audio source.
-  const fixture = path.resolve(__dirname, '../fixtures/short.wav')
-  const fileInput = page.locator('input[type="file"]')
-  await fileInput.setInputFiles(fixture)
+  await page.setInputFiles(
+    'input[type="file"]',
+    path.resolve(__dirname, '../fixtures/sine-440-1s.wav'),
+  )
 
-  // Navigate to effects, set speed=0.5
-  await page.goto('/#effects')
-  // The 4th slider on this screen is the speed slider (between pitch and filter).
-  // We rely on the displayed value text to verify.
+  await expect(page.getByText('review the source')).toBeVisible()
+  await page.getByText('to effects').click()
+  await expect(page.getByText('effects rack')).toBeVisible()
+
+  // Speed display starts at 1.00x.
   await expect(page.getByText('1.00x')).toBeVisible()
-  // Use evaluate to set the slider value directly (range input).
-  await page.locator('input[type="range"]').nth(3).evaluate((el: HTMLInputElement) => {
+
+  // The Effects rack has range inputs in panel order:
+  //   [0] sample rate, [1] pitch, [2] speed, [3] filter
+  // Drag speed (index 2) to the low end.
+  await page.locator('input[type="range"]').nth(2).evaluate((el: HTMLInputElement) => {
     el.value = '0' // slider 0 → 0.5x
     el.dispatchEvent(new Event('input', { bubbles: true }))
     el.dispatchEvent(new Event('change', { bubbles: true }))
@@ -2175,37 +2249,58 @@ test('speed slider drives playback speed', async ({ page }) => {
 })
 ```
 
-If `tests/fixtures/short.wav` does not exist, list `tests/fixtures/` and substitute whatever WAV is present (the existing `tests/e2e/upload-and-export.spec.ts` will reveal the pattern).
+If the slider index turns out to differ (panel order is verifiable by reading the post-Task-15 `EffectsRack.tsx`), correct the `.nth(...)` index. The four range inputs in panel order after Task 15 are: sample rate, pitch, speed, filter — index 2 is correct.
 
-- [ ] **Step 2: Test 2 — full pipeline render with speed**
+- [ ] **Step 2: Test 2 — render at speed=0.5, pitch=+12 produces an export row**
 
-This requires reading the rendered exported WAV. The existing `tests/e2e/upload-and-export.spec.ts` already exercises the export flow; mirror it. After exporting, decode the WAV via `AudioContext.decodeAudioData` in a `page.evaluate` and assert `decoded.duration ≈ 2 × original.duration` (within 5%) and dominant frequency ≈ 2× source.
+Append to `tests/e2e/speed-slider.spec.ts`:
 
 ```ts
-test('render at speed=0.5, pitch=+12 produces 2x duration and 2x pitch', async ({ page }) => {
+test('render at speed=0.5 + pitch=+12 produces an export row', async ({ page }) => {
   await page.goto('/')
-  // upload, navigate, set speed and pitch sliders, render, read export.
-  // ... (mirror the existing upload-and-export e2e test for the upload-and-render
-  //     flow; add slider drives for speed=0.5 and pitch=+12 before triggering
-  //     the render.)
-  // Assertions:
-  //   exported.duration ≈ 2 * source.duration (±5%)
-  //   peak FFT bin / source peak FFT bin ≈ 2.0 (±5%)
+  await page.setInputFiles(
+    'input[type="file"]',
+    path.resolve(__dirname, '../fixtures/sine-440-1s.wav'),
+  )
+  await page.getByText('to effects').click()
+  await expect(page.getByText('effects rack')).toBeVisible()
+
+  // pitch (index 1) → +12 (the slider has step=1, range -12..+12; raw value is the semitone)
+  await page.locator('input[type="range"]').nth(1).evaluate((el: HTMLInputElement) => {
+    el.value = '12'
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  // speed (index 2) → 0.5x
+  await page.locator('input[type="range"]').nth(2).evaluate((el: HTMLInputElement) => {
+    el.value = '0'
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+
+  await expect(page.getByText('+12 st')).toBeVisible()
+  await expect(page.getByText('0.50x')).toBeVisible()
+
+  await page.getByText('render & export').click()
+  await expect(page.getByRole('heading', { name: 'my exports' })).toBeVisible({ timeout: 15000 })
+  // Row appears with the same naming convention as the bit-depth e2e test.
+  const firstRow = page.locator('div.font-mono.text-\\[13px\\]').first()
+  await expect(firstRow).toContainText('.wav')
 })
 ```
 
-(Implementation detail of the existing render trigger flow needs to be looked up in the live `tests/e2e/upload-and-export.spec.ts`; do not stub.)
+The audio-quality assertion (output ≈ 2× source duration at 2× pitch) is **not** done at the e2e layer — it lives in the integration tests (Task 17) where we have direct access to the rendered `AudioBuffer`. Confirming render success and slider wiring is what e2e adds. Manual smoke in Task 19 closes the visual loop.
 
 - [ ] **Step 3: Run e2e**
 
 Run: `npm run test:e2e`
-Expected: both tests PASS.
+Expected: both tests PASS, plus the existing `upload-and-export.spec.ts` and `record-and-render.spec.ts`.
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add tests/e2e/speed-slider.spec.ts
-git commit -m "test(e2e): speed slider drives playback and render"
+git commit -m "test(e2e): speed slider updates display and survives a render"
 ```
 
 ---
@@ -2230,15 +2325,21 @@ npm run test:e2e
 
 Run `npm run dev`. Confirm:
 - Upload an audio file.
-- Set speed=0.5, pitch=+12 → audio plays for ~2× the original duration at +1 octave.
-- Render → exported WAV downloads, file plays back at the modified speed/pitch.
+- Set speed=0.5, pitch=+12 → audio plays for ~2× the original duration at +1 octave (this confirms the integration tests' decoupling claim by ear).
+- Render → exported WAV downloads, file plays back at the modified speed/pitch (durations and pitches in your audio editor of choice should match the slider settings).
 - Pause, drag the trim handles while paused, resume → playback resumes correctly.
 - Move speed slider mid-playback → no audible glitch, pitch holds.
 - Set speed=1, pitch=0 (neutral) → audio is byte-identical to the source within float epsilon (already verified in §7.2 integration).
 
-- [ ] **Step 3: Open the spec and plan side-by-side, walk every claim against the code**
+- [ ] **Step 3: Confirm "Files touched" set-equality against spec §8**
 
-Confirm every "Files touched" line in the spec §8 matches what was actually committed (`git log --stat origin/main..HEAD`).
+Run:
+
+```bash
+git diff --name-only origin/main...HEAD | sort
+```
+
+Compare against the spec §8 file list. The two sets must match (modulo `docs/superpowers/plans/2026-04-29-time-stretch-worklet.md` itself). Any extra file is scope creep; any missing file is incomplete work.
 
 - [ ] **Step 4: Open PR**
 
