@@ -31,6 +31,7 @@ export const defaultEffects: EffectParams = {
   bitDepth: 16,
   sampleRateHz: 44100,
   pitchSemitones: 0,
+  speed: 1,
   filterValue: 0,
 }
 

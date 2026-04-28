@@ -15,7 +15,7 @@ test.describe('filter attenuation', () => {
         kind: 'render',
         sourcePcm: [Array.from(ch)],
         sampleRate: sr,
-        effects: { bitDepth: 16, sampleRateHz: sr, pitchSemitones: 0, filterValue: -1 },
+        effects: { bitDepth: 16, sampleRateHz: sr, pitchSemitones: 0, speed: 1, filterValue: -1 },
         trim: { startSec: 0, endSec: dur },
       })
     })
@@ -40,7 +40,7 @@ test.describe('filter attenuation', () => {
         kind: 'render',
         sourcePcm: [Array.from(ch)],
         sampleRate: sr,
-        effects: { bitDepth: 16, sampleRateHz: sr, pitchSemitones: 0, filterValue: 1 },
+        effects: { bitDepth: 16, sampleRateHz: sr, pitchSemitones: 0, speed: 1, filterValue: 1 },
         trim: { startSec: 0, endSec: dur },
       })
     })
@@ -65,7 +65,7 @@ test.describe('filter attenuation', () => {
         kind: 'render',
         sourcePcm: [Array.from(ch)],
         sampleRate: sr,
-        effects: { bitDepth: 16, sampleRateHz: sr, pitchSemitones: 0, filterValue: 0 },
+        effects: { bitDepth: 16, sampleRateHz: sr, pitchSemitones: 0, speed: 1, filterValue: 0 },
         trim: { startSec: 0, endSec: dur },
       })
     })

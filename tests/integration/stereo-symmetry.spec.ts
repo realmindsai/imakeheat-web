@@ -14,7 +14,7 @@ test('stereo input with L === R produces stereo output with L === R', async ({ p
       kind: 'render',
       sourcePcm: [Array.from(ch), Array.from(ch)],
       sampleRate: sr,
-      effects: { bitDepth: 4, sampleRateHz: 12000, pitchSemitones: -3, filterValue: -0.5 },
+      effects: { bitDepth: 4, sampleRateHz: 12000, pitchSemitones: -3, speed: 1, filterValue: -0.5 },
       trim: { startSec: 0, endSec: dur },
     })
   })
