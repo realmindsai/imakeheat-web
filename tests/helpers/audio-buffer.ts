@@ -1,14 +1,8 @@
 // ABOUTME: Minimal AudioBuffer-shaped fixture for unit tests without a real Web Audio context.
 // ABOUTME: Implements only the subset wav.ts uses: numberOfChannels, sampleRate, length, getChannelData.
 
-// Minimal AudioBuffer-shaped object for tests where a real Web Audio
-// context is not available. Implements only the subset wav.ts uses.
-export interface AudioBufferLike {
-  numberOfChannels: number
-  sampleRate: number
-  length: number
-  getChannelData(channel: number): Float32Array
-}
+import type { AudioBufferLike } from '../../src/audio/types'
+export type { AudioBufferLike }
 
 export function makeBuffer(
   channels: number,

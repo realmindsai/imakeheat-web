@@ -1,6 +1,10 @@
 // ABOUTME: Minimal 16-bit PCM WAV encoder and header reader.
 // ABOUTME: No AudioContext required; sample rate written is always the buffer's actual rate (no doubling lies).
 
+import type { AudioBufferLike } from './types'
+
+export type { AudioBufferLike }
+
 export interface WavHeader {
   riffMagic: string         // "RIFF"
   waveMagic: string         // "WAVE"
@@ -11,13 +15,6 @@ export interface WavHeader {
   blockAlign: number        // channels * bitsPerSample / 8
   bitsPerSample: number
   dataChunkSize: number
-}
-
-interface AudioBufferLike {
-  numberOfChannels: number
-  sampleRate: number
-  length: number
-  getChannelData(channel: number): Float32Array
 }
 
 export async function wavEncode(buffer: AudioBufferLike): Promise<Blob> {
