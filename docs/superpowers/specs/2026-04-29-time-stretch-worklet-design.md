@@ -282,7 +282,7 @@ Extends `tests/integration/runner.ts` to take `speed` in `EffectParams` and exer
 - `src/audio/engine.ts` — replace `currentSource` with `player`; reshape position math; port-message `play`/`pause`/`seek`/`setTrim`/`setFx`/`unload`
 - `src/audio/pitch.ts` — keep; consumer moves to inside the worklet
 - `src/store/session.ts` — `defaultEffects.speed = 1`
-- `src/store/exports.ts` — read-time `speed: 1` normalisation in `listExports`/`getExport`
+- `src/store/exports.ts` — read-time `speed: 1` normalisation in `listExports`; opportunistic write-back through `toggleStarred`
 - `src/screens/EffectsRack.tsx` — fifth slider
 - `src/screens/RenderModal.tsx` — duration display reads `/ speed` not `/ pitchRate`
 - `src/dev/components-gallery.tsx` — frozen "speed" example
