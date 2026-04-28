@@ -58,6 +58,11 @@ export function initExportsDb(): Promise<IDBPDatabase<ImaKeHeatDB>> {
   return dbPromise
 }
 
+function normalize(rec: ExportRecord): ExportRecord {
+  if (rec.fxSnapshot.speed !== undefined) return rec
+  return { ...rec, fxSnapshot: { speed: 1, ...rec.fxSnapshot } }
+}
+
 export async function putExport(rec: ExportRecord): Promise<void> {
   const db = await initExportsDb()
   await db.put('exports', rec)
@@ -67,7 +72,7 @@ export async function putExport(rec: ExportRecord): Promise<void> {
 export async function listExports(): Promise<ExportRecord[]> {
   const db = await initExportsDb()
   const all = await db.getAllFromIndex('exports', 'by_createdAt')
-  return all.reverse()
+  return all.reverse().map(normalize)
 }
 
 export async function countExports(): Promise<number> {
@@ -85,7 +90,10 @@ export async function toggleStarred(id: string): Promise<void> {
   const db = await initExportsDb()
   const tx = db.transaction('exports', 'readwrite')
   const rec = await tx.store.get(id)
-  if (rec) await tx.store.put({ ...rec, starred: !rec.starred })
+  if (rec) {
+    const normalised = normalize(rec)
+    await tx.store.put({ ...normalised, starred: !normalised.starred })
+  }
   await tx.done
   notify()
 }

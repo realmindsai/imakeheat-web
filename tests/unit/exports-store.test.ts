@@ -68,4 +68,45 @@ describe('exports store', () => {
     await deleteExport('x')
     expect(await countExports()).toBe(0)
   })
+
+  it('normalize fills speed=1 on records written without it', async () => {
+    // Simulate a pre-migration record by stripping speed.
+    const legacyFx = { ...defaultEffects } as Partial<typeof defaultEffects>
+    delete legacyFx.speed
+    const rec = fakeRecord({
+      id: 'legacy',
+      fxSnapshot: legacyFx as typeof defaultEffects,
+    })
+    await putExport(rec)
+    const all = await listExports()
+    expect(all[0].fxSnapshot.speed).toBe(1)
+  })
+
+  it('normalize preserves speed when present', async () => {
+    const rec = fakeRecord({
+      id: 'modern',
+      fxSnapshot: { ...defaultEffects, speed: 1.5 },
+    })
+    await putExport(rec)
+    const all = await listExports()
+    expect(all[0].fxSnapshot.speed).toBe(1.5)
+  })
+
+  it('toggleStarred writes back the speed field on legacy records', async () => {
+    const legacyFx = { ...defaultEffects } as Partial<typeof defaultEffects>
+    delete legacyFx.speed
+    await putExport(fakeRecord({
+      id: 'legacy-star',
+      starred: false,
+      fxSnapshot: legacyFx as typeof defaultEffects,
+    }))
+    await toggleStarred('legacy-star')
+    const all = await listExports()
+    expect(all[0].starred).toBe(true)
+    expect(all[0].fxSnapshot.speed).toBe(1)
+    // Toggle again to confirm the persisted record is now well-formed.
+    await toggleStarred('legacy-star')
+    const after = await listExports()
+    expect(after[0].fxSnapshot.speed).toBe(1)
+  })
 })
