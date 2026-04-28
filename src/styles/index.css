@@ -1,0 +1,9 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body { margin: 0; padding: 0; }
+  body { @apply bg-rmai-bg text-rmai-fg1 font-sans; }
+  * { box-sizing: border-box; }
+}
