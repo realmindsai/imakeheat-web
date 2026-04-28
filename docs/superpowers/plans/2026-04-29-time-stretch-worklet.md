@@ -940,7 +940,7 @@ Run Task 5's implementation against this test before adding correlation, to *con
 - [ ] **Step 2: Run, confirm failure**
 
 Run: `npx vitest run tests/unit/wsola.test.ts`
-Expected: FAIL — without correlation, the OLA introduces splice clicks; the smoothed/raw rms ratio drops below 0.95.
+Expected: FAIL — without correlation, splice clicks broaden the spectrum; the in-band ratio drops below 0.6.
 
 - [ ] **Step 3: Implement cross-correlation search against the synthesis tail**
 
@@ -1209,7 +1209,7 @@ describe('WSOLAProcessor — control messages', () => {
 Run: `npx vitest run tests/unit/wsola.test.ts`
 Expected: pause and setFx tests likely pass (handlers exist already). Seek test may fail if `seek` doesn't reset OLA state.
 
-- [ ] **Step 3: Make seek reset OLA + prevTail**
+- [ ] **Step 3: Make seek reset OLA + synthTail**
 
 In `onMessage` `seek` branch:
 
@@ -1217,7 +1217,8 @@ In `onMessage` `seek` branch:
 case 'seek': {
   this.readPos = Math.round(msg.sourceTimeSec * this.srcSampleRate)
   for (const r of this.olaRing) r.fill(0)
-  for (const t of this.prevTail) t.fill(0)
+  for (const t of this.synthTail) t.fill(0)
+  this.hasSynthTail = false
   this.olaWritePos = 0
   this.olaReadPos = 0
   this.olaReadPosFrac = 0
