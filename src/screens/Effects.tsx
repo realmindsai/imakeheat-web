@@ -6,6 +6,7 @@ import { TopBar } from '../components/TopBar'
 import { Icon } from '../components/icons'
 import { Slider } from '../components/Slider'
 import { Waveform } from '../components/Waveform'
+import { TrimWaveform } from '../components/TrimWaveform'
 import { StatusDot } from '../components/StatusDot'
 import { PrimaryButton } from '../components/PrimaryButton'
 import { EffectsRack } from './EffectsRack'
@@ -47,7 +48,11 @@ export function Effects() {
     const tick = () => {
       const t = engine.getCurrentSourceTimeSec(trim)
       const span = Math.max(0.001, trim.endSec - trim.startSec)
-      setProgress(Math.min(1, Math.max(0, (t - trim.startSec) / span)))
+      // Loop playback runs indefinitely; mod by span so the playhead
+      // sweeps the trim window repeatedly instead of pinning at 100%.
+      const elapsed = t - trim.startSec
+      const looped = ((elapsed % span) + span) % span
+      setProgress(Math.min(1, Math.max(0, looped / span)))
       playheadRaf.current = requestAnimationFrame(tick)
     }
     playheadRaf.current = requestAnimationFrame(tick)
@@ -71,6 +76,11 @@ export function Effects() {
   const reset = () => {
     useSessionStore.getState().setEffect(defaultEffects)
     engine.setEffect(defaultEffects)
+  }
+
+  const setTrim = (startSec: number, endSec: number) => {
+    useSessionStore.getState().setTrim({ startSec, endSec })
+    void engine.setTrim({ startSec, endSec })
   }
 
   const onRender = async () => {
@@ -141,6 +151,25 @@ export function Effects() {
               <StatusDot />
               <span className="font-mono text-[10.5px]">live · p50 {latencyMs}ms</span>
             </div>
+          </div>
+        </div>
+      </div>
+      <div className="px-[22px] pt-[10px]">
+        <div className="rounded-[10px] border border-rmai-border bg-white p-[12px]">
+          <div className="mb-[8px] flex items-center justify-between text-[10px] tracking-wider text-rmai-mut">
+            <span className="uppercase">chunk</span>
+            <span className="font-mono">
+              {trim.startSec.toFixed(2)}s → {trim.endSec.toFixed(2)}s
+              · {(trim.endSec - trim.startSec).toFixed(2)}s
+            </span>
+          </div>
+          <div className="h-[64px]">
+            <TrimWaveform
+              durationSec={source.durationSec}
+              startSec={trim.startSec}
+              endSec={trim.endSec}
+              onChange={setTrim}
+            />
           </div>
         </div>
       </div>

@@ -64,9 +64,16 @@ export class AudioEngine {
       }
     }
 
-    const offset = trim.startSec + this.pausedOffsetSec
-    const remaining = Math.max(0, trim.endSec - offset)
-    src.start(0, offset, remaining)
+    // Loop the trim window indefinitely until pause(). pausedOffsetSec
+    // is wall-clock time accumulated across pause/resume; mod by span so
+    // resume after long playback lands in-window.
+    const span = Math.max(0, trim.endSec - trim.startSec)
+    const offsetWithinSpan = span > 0 ? this.pausedOffsetSec % span : 0
+    const offset = trim.startSec + offsetWithinSpan
+    src.loop = true
+    src.loopStart = trim.startSec
+    src.loopEnd = trim.endSec
+    src.start(0, offset)
     this.currentSource = src
     this.playStartedAt = this.ctx.currentTime
     this.isPlaying = true
