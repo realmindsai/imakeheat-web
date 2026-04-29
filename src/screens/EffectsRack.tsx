@@ -9,12 +9,24 @@ import { useSessionStore } from '../store/session'
 import { engine } from '../audio/engine'
 import { sliderToSpeed, speedToSlider } from '../audio/speed'
 
+const SP_TARGET_RATE_HZ = 26000
+
 export function EffectsRack() {
   const fx = useSessionStore((s) => s.effects)
+  const srManuallyAdjusted = useSessionStore((s) => s.srManuallyAdjusted)
 
   const update = (patch: Partial<typeof fx>) => {
     useSessionStore.getState().setEffect(patch)
     engine.setEffect({ ...fx, ...patch })
+  }
+
+  const selectBitDepth = (b: number) => {
+    const prev = fx.bitDepth
+    update({ bitDepth: b as typeof fx.bitDepth })
+    if (b === 12 && prev !== 12 && !srManuallyAdjusted) {
+      useSessionStore.getState().nudgeSampleRate(SP_TARGET_RATE_HZ)
+      engine.setEffect({ ...fx, bitDepth: 12, sampleRateHz: SP_TARGET_RATE_HZ })
+    }
   }
 
   const bitDepths = [2, 4, 8, 12, 16] as const
@@ -32,7 +44,7 @@ export function EffectsRack() {
           {bitDepths.map((b) => (
             <button
               key={b}
-              onClick={() => update({ bitDepth: b })}
+              onClick={() => selectBitDepth(b)}
               className={`flex-1 rounded-md py-[7px] font-mono text-[12px] font-semibold ${
                 fx.bitDepth === b
                   ? 'border border-rmai-fg1 bg-rmai-fg1 text-white'
