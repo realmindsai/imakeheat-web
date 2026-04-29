@@ -31,11 +31,15 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
   private readPos = 0             // input samples (fractional allowed)
   private speed = 1
   private pitchFactor = 1
+  private pitchSemitones = 0
   private state: 'idle' | 'playing' | 'paused' = 'idle'
 
   private soundtouch: SoundTouch | null = null
   private filter: SimpleFilter | null = null
   private interleavedBuffer = new Float32Array(0) // reused per process() call
+
+  private blocksSinceReport = 0
+  private static readonly REPORT_EVERY_BLOCKS = 8
 
   constructor() {
     super()
@@ -60,11 +64,13 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
         this.readPos = Math.round(msg.offsetSec * this.srcSampleRate)
         this.applyFx(msg.fx)
         this.state = 'playing'
+        this.blocksSinceReport = 0
         this.initSoundTouch(msg.fx)
         return
       }
       case 'pause': {
         this.state = 'paused'
+        this.blocksSinceReport = 0
         return
       }
       case 'seek': {
@@ -72,8 +78,9 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
         // Re-init SoundTouch entirely to flush all internal delay buffers;
         // filter.clear() alone leaves latency artifacts at the splice point.
         if (this.soundtouch) {
-          this.initSoundTouch({ speed: this.speed, pitchSemitones: Math.round(Math.log2(this.pitchFactor) * 12) })
+          this.initSoundTouch({ speed: this.speed, pitchSemitones: this.pitchSemitones })
         }
+        this.blocksSinceReport = 0
         return
       }
       case 'setTrim': {
@@ -97,6 +104,7 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
         this.state = 'idle'
         this.soundtouch = null
         this.filter = null
+        this.blocksSinceReport = 0
         return
       }
     }
@@ -104,6 +112,7 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
 
   private applyFx(fx: FxParams): void {
     this.speed = fx.speed
+    this.pitchSemitones = fx.pitchSemitones
     this.pitchFactor = Math.pow(2, fx.pitchSemitones / 12)
   }
 
@@ -161,6 +170,7 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
 
     if (this.isNeutral()) {
       this.processNeutral(output)
+      this.maybeReportPosition()
       return true
     }
 
@@ -188,7 +198,19 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
         for (let c = 0; c < output.length; c++) output[c][i] = 0
       }
     }
+    this.maybeReportPosition()
     return true
+  }
+
+  private maybeReportPosition(): void {
+    this.blocksSinceReport++
+    if (this.blocksSinceReport >= WSOLAProcessor.REPORT_EVERY_BLOCKS) {
+      this.blocksSinceReport = 0
+      ;(this as any).port.postMessage({
+        type: 'position',
+        readPosSec: this.readPos / this.srcSampleRate,
+      })
+    }
   }
 
   private processNeutral(output: Float32Array[]): void {

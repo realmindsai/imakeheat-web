@@ -221,3 +221,49 @@ describe('WSOLAProcessor — pitch shift', () => {
     expect(rms(out[0].subarray(4500, 6500))).toBeGreaterThan(0.1)
   })
 })
+
+function spyPortPosts(proc: any): any[] {
+  const sent: any[] = []
+  proc.port = {
+    onmessage: proc.port.onmessage,
+    postMessage: (data: any) => sent.push(data),
+  }
+  return sent
+}
+
+describe('WSOLAProcessor — position reporting', () => {
+  it('emits position messages periodically while playing', () => {
+    const proc = new WSOLAProcessor()
+    const sent = spyPortPosts(proc)
+    const input = sine(SR, 440, SR)
+    postToProcessor(proc, { type: 'load', channels: [input], sampleRate: SR })
+    postToProcessor(proc, {
+      type: 'play', offsetSec: 0,
+      trim: { startSec: 0, endSec: 1 },
+      fx: { speed: 1, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
+    })
+    drainBlocks(proc, 1, 32)
+    const positions = sent.filter((m) => m.type === 'position')
+    expect(positions.length).toBeGreaterThan(0)
+    const last = positions[positions.length - 1]
+    expect(last.readPosSec).toBeGreaterThan(0)
+    expect(last.readPosSec).toBeLessThan(0.1)
+  })
+
+  it('does not emit position messages while paused', () => {
+    const proc = new WSOLAProcessor()
+    const sent = spyPortPosts(proc)
+    const input = sine(SR, 440, SR)
+    postToProcessor(proc, { type: 'load', channels: [input], sampleRate: SR })
+    postToProcessor(proc, {
+      type: 'play', offsetSec: 0,
+      trim: { startSec: 0, endSec: 1 },
+      fx: { speed: 1, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
+    })
+    drainBlocks(proc, 1, 8)
+    sent.length = 0
+    postToProcessor(proc, { type: 'pause' })
+    drainBlocks(proc, 1, 64)
+    expect(sent.filter((m) => m.type === 'position').length).toBe(0)
+  })
+})
