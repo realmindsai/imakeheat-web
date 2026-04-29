@@ -56,6 +56,8 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
         this.readPos = 0
         this.state = 'idle'
         this.initSoundTouch({ speed: 1, pitchSemitones: 0 })
+        // Ack so offline renderOffline can await before calling startRendering().
+        ;(this as any).port.postMessage({ type: 'loaded' })
         return
       }
       case 'play': {

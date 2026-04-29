@@ -2,7 +2,6 @@
 // ABOUTME: loadWorklets registers bitcrusher + srhold + wsola processors into any BaseAudioContext.
 
 import type { EffectParams, TrimPoints } from './types'
-import { pitchRateFromSemitones } from './pitch'
 import { filterParams } from './filter-mapping'
 
 import bitcrusherUrl from './worklets/bitcrusher.worklet.ts?worker&url'
@@ -81,14 +80,53 @@ export async function renderOffline(
   trim: TrimPoints,
   fx: EffectParams,
 ): Promise<AudioBuffer> {
-  // TODO(Task 13): rewrite to use WSOLA worklet for offline rendering.
-  // For now, stub so engine.ts compiles. This path is not exercised until Task 13.
-  throw new Error('not yet implemented (Task 13)')
-  // Suppress unused-import lint errors — pitchRateFromSemitones used by the legacy
-  // body that Task 13 will replace.
-  void pitchRateFromSemitones
-  void ctx
-  void buffer
-  void trim
-  void fx
+  await loadWorklets(ctx)
+
+  const player = new AudioWorkletNode(ctx, 'wsola')
+  const bitCrusher = new AudioWorkletNode(ctx, 'bitcrusher')
+  const srHold = new AudioWorkletNode(ctx, 'srhold')
+  const filter = ctx.createBiquadFilter()
+
+  bitCrusher.port.postMessage({ bits: fx.bitDepth })
+  const holdFactor = Math.max(1, Math.floor(ctx.sampleRate / Math.max(1, fx.sampleRateHz)))
+  srHold.port.postMessage({ holdFactor })
+  const fp = filterParams(fx.filterValue, ctx.sampleRate)
+  filter.type = fp.type
+  filter.frequency.value = fp.frequency
+  filter.Q.value = fp.Q
+
+  // Load buffer into the worklet (offline ctx accepts the same messages).
+  // We await the 'loaded' ack before startRendering() to avoid a race where the
+  // worklet thread processes the load message AFTER the first render quantum runs.
+  const channels: Float32Array[] = []
+  const transfer: ArrayBuffer[] = []
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    const data = new Float32Array(buffer.length)
+    buffer.copyFromChannel(data, c)
+    channels.push(data)
+    transfer.push(data.buffer)
+  }
+  await new Promise<void>((resolve) => {
+    player.port.onmessage = (ev: MessageEvent) => {
+      if ((ev.data as { type: string }).type === 'loaded') resolve()
+    }
+    player.port.postMessage(
+      { type: 'load', channels, sampleRate: buffer.sampleRate },
+      transfer,
+    )
+  })
+  player.port.onmessage = null
+  player.port.postMessage({
+    type: 'play',
+    offsetSec: trim.startSec,
+    trim,
+    fx,
+  })
+
+  player.connect(bitCrusher)
+  bitCrusher.connect(srHold)
+  srHold.connect(filter)
+  filter.connect(ctx.destination)
+
+  return ctx.startRendering()
 }
