@@ -1,11 +1,8 @@
 // ABOUTME: WSOLA player worklet — owns the source buffer; emits at chosen speed and pitch.
-// ABOUTME: Standard WSOLA stretch composed with linear resample for pitch; neutral fast-path bypass.
+// ABOUTME: Wraps soundtouchjs for tempo/pitch stretch; neutral fast-path bypass for speed=1 and pitch=0.
 
 import './processor-shim'
-
-const N = 1024            // frame size
-const HS = 256            // synthesis hop (75% overlap)
-const RING = 4 * N        // OLA ring buffer length, ample headroom
+import { SoundTouch, SimpleFilter } from 'soundtouchjs'
 
 interface FxParams {
   speed: number
@@ -36,23 +33,13 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
   private pitchFactor = 1
   private state: 'idle' | 'playing' | 'paused' = 'idle'
 
-  private hann = new Float32Array(N)
-  private windowEnv = new Float32Array(HS) // partition-of-unity divisor
-  private olaRing: Float32Array[] = [] // per channel
-  private olaWritePos = 0              // write head in ring (samples emitted so far)
-  private olaReadPos = 0               // read head
+  private soundtouch: SoundTouch | null = null
+  private filter: SimpleFilter | null = null
+  private interleavedBuffer = new Float32Array(0) // reused per process() call
 
   constructor() {
     super()
     ;(this as any).port.onmessage = (ev: MessageEvent) => this.onMessage(ev.data as InMsg)
-    // Precompute Hann window
-    for (let i = 0; i < N; i++) this.hann[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (N - 1)))
-    // For Hs=256, N=1024 (overlap factor = N/Hs = 4), the sum-of-windows over one Hs is:
-    for (let i = 0; i < HS; i++) {
-      let s = 0
-      for (let k = 0; k < N / HS; k++) s += this.hann[i + k * HS] ** 2 // power-complementary
-      this.windowEnv[i] = Math.max(s, 1e-6)
-    }
   }
 
   private onMessage(msg: InMsg): void {
@@ -64,9 +51,7 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
         this.trimEnd = msg.channels[0]?.length ?? 0
         this.readPos = 0
         this.state = 'idle'
-        this.olaRing = msg.channels.map(() => new Float32Array(RING))
-        this.olaWritePos = 0
-        this.olaReadPos = 0
+        this.initSoundTouch({ speed: 1, pitchSemitones: 0 })
         return
       }
       case 'play': {
@@ -75,10 +60,7 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
         this.readPos = Math.round(msg.offsetSec * this.srcSampleRate)
         this.applyFx(msg.fx)
         this.state = 'playing'
-        // Reset OLA state so each playback starts clean
-        for (const ring of this.olaRing) ring.fill(0)
-        this.olaWritePos = 0
-        this.olaReadPos = 0
+        this.initSoundTouch(msg.fx)
         return
       }
       case 'pause': {
@@ -87,10 +69,7 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
       }
       case 'seek': {
         this.readPos = Math.round(msg.sourceTimeSec * this.srcSampleRate)
-        // Drop OLA state so the seek position takes effect immediately
-        for (const ring of this.olaRing) ring.fill(0)
-        this.olaWritePos = 0
-        this.olaReadPos = 0
+        if (this.filter) this.filter.clear()
         return
       }
       case 'setTrim': {
@@ -103,11 +82,17 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
       }
       case 'setFx': {
         this.applyFx(msg.fx)
+        if (this.soundtouch) {
+          this.soundtouch.tempo = msg.fx.speed
+          this.soundtouch.pitchSemitones = msg.fx.pitchSemitones
+        }
         return
       }
       case 'unload': {
         this.channels = []
         this.state = 'idle'
+        this.soundtouch = null
+        this.filter = null
         return
       }
     }
@@ -120,6 +105,40 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
 
   private isNeutral(): boolean {
     return this.speed === 1 && this.pitchFactor === 1
+  }
+
+  private makeSource() {
+    const self = this
+    return {
+      extract(target: Float32Array, numFrames: number, _sourcePosition: number): number {
+        const channels = self.channels
+        if (channels.length === 0) {
+          target.fill(0)
+          return numFrames
+        }
+        const left = channels[0]
+        const right = channels.length > 1 ? channels[1] : channels[0]
+        const span = Math.max(1, self.trimEnd - self.trimStart)
+        for (let i = 0; i < numFrames; i++) {
+          // Wrap readPos into [trimStart, trimEnd)
+          let p = self.readPos
+          if (p >= self.trimEnd) p = self.trimStart + ((p - self.trimStart) % span)
+          if (p < self.trimStart) p = self.trimStart
+          const idx = Math.floor(p)
+          target[i * 2] = left[idx] ?? 0
+          target[i * 2 + 1] = right[idx] ?? 0
+          self.readPos = p + 1
+        }
+        return numFrames
+      },
+    }
+  }
+
+  private initSoundTouch(fx: FxParams): void {
+    this.soundtouch = new SoundTouch()
+    this.soundtouch.tempo = fx.speed
+    this.soundtouch.pitchSemitones = fx.pitchSemitones
+    this.filter = new SimpleFilter(this.makeSource(), this.soundtouch)
   }
 
   process(
@@ -141,12 +160,30 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
       return true
     }
 
-    // Non-neutral path: ensure ≥ output.length samples are queued in olaRing.
-    const need = output[0].length
-    while (this.olaWritePos - this.olaReadPos < need) {
-      this.synthesizeOneFrame()
+    // Non-neutral: extract from SoundTouch pipeline.
+    if (!this.filter) {
+      for (let c = 0; c < output.length; c++) output[c]?.fill(0)
+      return true
     }
-    this.drainToOutput(output, need)
+
+    const blockSize = output[0].length
+    const need = blockSize * 2 // stereo interleaved
+    if (this.interleavedBuffer.length < need) this.interleavedBuffer = new Float32Array(need)
+    const framesProduced = this.filter.extract(this.interleavedBuffer, blockSize)
+
+    // De-interleave into output channels. If output is mono, just take L.
+    for (let i = 0; i < blockSize; i++) {
+      if (i < framesProduced) {
+        for (let c = 0; c < output.length && c < 2; c++) {
+          output[c][i] = this.interleavedBuffer[i * 2 + c] ?? 0
+        }
+        if (output.length > 2) {
+          for (let c = 2; c < output.length; c++) output[c][i] = 0
+        }
+      } else {
+        for (let c = 0; c < output.length; c++) output[c][i] = 0
+      }
+    }
     return true
   }
 
@@ -163,53 +200,6 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
       }
       this.readPos = p + 1
     }
-  }
-
-  private synthesizeOneFrame(): void {
-    // For each output channel, take a Hann-windowed frame from the input at this.readPos,
-    // overlap-add into the ring at this.olaWritePos, then advance olaWritePos by HS.
-    const S = this.pitchFactor / this.speed
-    const Ha = HS / S
-    const channels = this.channels.length
-    if (channels === 0) return
-
-    // Pull one analysis frame; each sample within the frame wraps if it overruns trimEnd.
-    const startInt = Math.floor(this.readPos)
-    const span = Math.max(1, this.trimEnd - this.trimStart)
-
-    for (let c = 0; c < channels; c++) {
-      const inCh = this.channels[c]
-      const ring = this.olaRing[c]
-      for (let n = 0; n < N; n++) {
-        // wrap each input sample read within the frame
-        let p = startInt + n
-        if (p >= this.trimEnd) p = this.trimStart + ((p - this.trimStart) % span)
-        const v = inCh[p] ?? 0
-        const ringIdx = (this.olaWritePos + n) % RING
-        ring[ringIdx] += v * this.hann[n]
-      }
-    }
-    this.olaWritePos += HS
-    this.readPos += Ha
-    // Loop-wrap readPos within [trimStart, trimEnd) per spec §5.5.
-    // The mod gymnastics handles the case where Ha may push readPos far past trimEnd.
-    if (this.readPos >= this.trimEnd) {
-      this.readPos = this.trimStart + ((this.readPos - this.trimStart) % span)
-    }
-  }
-
-  private drainToOutput(output: Float32Array[], need: number): void {
-    const channels = output.length
-    for (let i = 0; i < need; i++) {
-      const ringIdx = (this.olaReadPos + i) % RING
-      const envIdx = (this.olaReadPos + i) % HS
-      const norm = this.windowEnv[envIdx]
-      for (let c = 0; c < channels && c < this.olaRing.length; c++) {
-        output[c][i] = this.olaRing[c][ringIdx] / norm
-        this.olaRing[c][ringIdx] = 0 // clear behind read head
-      }
-    }
-    this.olaReadPos += need
   }
 }
 
