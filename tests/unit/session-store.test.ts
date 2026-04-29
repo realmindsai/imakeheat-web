@@ -63,4 +63,36 @@ describe('session store', () => {
     })
     expect(useSessionStore.getState().render.phase).toBe('idle')
   })
+
+  it('starts with srManuallyAdjusted=false', () => {
+    expect(useSessionStore.getState().srManuallyAdjusted).toBe(false)
+  })
+
+  it('setEffect with sampleRateHz sets srManuallyAdjusted=true', () => {
+    useSessionStore.getState().setEffect({ sampleRateHz: 22050 })
+    expect(useSessionStore.getState().effects.sampleRateHz).toBe(22050)
+    expect(useSessionStore.getState().srManuallyAdjusted).toBe(true)
+  })
+
+  it('setEffect without sampleRateHz does NOT set srManuallyAdjusted', () => {
+    useSessionStore.getState().setEffect({ bitDepth: 12 })
+    expect(useSessionStore.getState().srManuallyAdjusted).toBe(false)
+  })
+
+  it('nudgeSampleRate sets sampleRateHz without setting srManuallyAdjusted', () => {
+    useSessionStore.getState().nudgeSampleRate(26000)
+    expect(useSessionStore.getState().effects.sampleRateHz).toBe(26000)
+    expect(useSessionStore.getState().srManuallyAdjusted).toBe(false)
+  })
+
+  it('setSource resets srManuallyAdjusted to false', () => {
+    useSessionStore.getState().setEffect({ sampleRateHz: 22050 })
+    expect(useSessionStore.getState().srManuallyAdjusted).toBe(true)
+    useSessionStore.getState().setSource({
+      id: 'c', blob: new Blob(),
+      buffer: { numberOfChannels: 1, sampleRate: 44100, length: 44100, duration: 1 } as any,
+      name: 'fresh.wav', durationSec: 1, sampleRateHz: 44100, channels: 1,
+    })
+    expect(useSessionStore.getState().srManuallyAdjusted).toBe(false)
+  })
 })

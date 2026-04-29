@@ -45,11 +45,13 @@ interface SessionState {
   render: RenderState
   engineReady: boolean
   route: Route
+  srManuallyAdjusted: boolean
 
   setSource(source: Source): void
   clearSource(): void
   setTrim(trim: TrimPoints): void
   setEffect(patch: Partial<EffectParams>): void
+  nudgeSampleRate(hz: number): void
   setPlayback(patch: Partial<Playback>): void
   setEngineReady(ready: boolean): void
   navigate(route: Route): void
@@ -59,7 +61,7 @@ interface SessionState {
   reset(): void
 }
 
-const initial: Omit<SessionState, 'setSource' | 'clearSource' | 'setTrim' | 'setEffect' | 'setPlayback' | 'setEngineReady' | 'navigate' | 'beginRender' | 'finishRender' | 'failRender' | 'reset'> = {
+const initial: Omit<SessionState, 'setSource' | 'clearSource' | 'setTrim' | 'setEffect' | 'nudgeSampleRate' | 'setPlayback' | 'setEngineReady' | 'navigate' | 'beginRender' | 'finishRender' | 'failRender' | 'reset'> = {
   source: null,
   trim: defaultTrim,
   effects: defaultEffects,
@@ -67,6 +69,7 @@ const initial: Omit<SessionState, 'setSource' | 'clearSource' | 'setTrim' | 'set
   render: { phase: 'idle' },
   engineReady: false,
   route: 'home',
+  srManuallyAdjusted: false,
 }
 
 export const useSessionStore = create<SessionState>((set, _get) => ({
@@ -79,11 +82,18 @@ export const useSessionStore = create<SessionState>((set, _get) => ({
       trim: { startSec: 0, endSec: source.durationSec },
       playback: { isPlaying: false, currentSourceTimeSec: 0, looping: false },
       render: { phase: 'idle' },
+      srManuallyAdjusted: false,
     }),
   clearSource: () =>
     set({ source: null, trim: defaultTrim, playback: { isPlaying: false, currentSourceTimeSec: 0, looping: false } }),
   setTrim: (trim) => set({ trim }),
-  setEffect: (patch) => set((s) => ({ effects: { ...s.effects, ...patch } })),
+  setEffect: (patch) => set((s) => ({
+    effects: { ...s.effects, ...patch },
+    srManuallyAdjusted: 'sampleRateHz' in patch ? true : s.srManuallyAdjusted,
+  })),
+  nudgeSampleRate: (hz) => set((s) => ({
+    effects: { ...s.effects, sampleRateHz: hz },
+  })),
   setPlayback: (patch) => set((s) => ({ playback: { ...s.playback, ...patch } })),
   setEngineReady: (engineReady) => set({ engineReady }),
   navigate: (route) => set({ route }),
