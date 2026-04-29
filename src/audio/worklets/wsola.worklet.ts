@@ -173,13 +173,6 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
     const channels = this.channels.length
     if (channels === 0) return
 
-    // Once the analysis head has consumed the trim window, stop producing frames.
-    if (this.readPos >= this.trimEnd) {
-      // Advance write pointer by HS so the drain loop can exit.
-      this.olaWritePos += HS
-      return
-    }
-
     // Pull one analysis frame; each sample within the frame wraps if it overruns trimEnd.
     const startInt = Math.floor(this.readPos)
     const span = Math.max(1, this.trimEnd - this.trimStart)
@@ -198,6 +191,11 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
     }
     this.olaWritePos += HS
     this.readPos += Ha
+    // Loop-wrap readPos within [trimStart, trimEnd) per spec §5.5.
+    // The mod gymnastics handles the case where Ha may push readPos far past trimEnd.
+    if (this.readPos >= this.trimEnd) {
+      this.readPos = this.trimStart + ((this.readPos - this.trimStart) % span)
+    }
   }
 
   private drainToOutput(output: Float32Array[], need: number): void {

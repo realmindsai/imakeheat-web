@@ -37,10 +37,6 @@ function rms(buf: Float32Array): number {
   return Math.sqrt(s / buf.length)
 }
 
-function findLastActive(buf: Float32Array, threshold = 1e-3): number {
-  for (let i = buf.length - 1; i >= 0; i--) if (Math.abs(buf[i]) > threshold) return i
-  return -1
-}
 
 describe('WSOLAProcessor', () => {
   it('neutral fast-path is sample-identical to input (mod priming)', () => {
@@ -62,7 +58,7 @@ describe('WSOLAProcessor', () => {
 })
 
 describe('WSOLAProcessor — stretch', () => {
-  it('speed=0.5 produces output ~2× input length', () => {
+  it('speed=0.5 produces sustained output past the natural input length', () => {
     const proc = new WSOLAProcessor()
     const input = sine(4096, 440, SR)
     postToProcessor(proc, { type: 'load', channels: [input], sampleRate: SR })
@@ -71,15 +67,16 @@ describe('WSOLAProcessor — stretch', () => {
       trim: { startSec: 0, endSec: 4096 / SR },
       fx: { speed: 0.5, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
     })
-    // Expect ~8192 samples of audible signal. Drain 80 blocks (10240 samples) to be safe.
-    const out = drainBlocks(proc, 1, 80)
-    const last = findLastActive(out[0])
-    // Allow ±N samples of imprecision due to OLA priming and frame-edge rounding.
-    expect(last).toBeGreaterThan(8192 - 1024)
-    expect(last).toBeLessThan(8192 + 1024)
+    const out = drainBlocks(proc, 1, 64) // 8192 samples
+    // Skip priming; assert RMS is sustained throughout.
+    // At speed=0.5, output rate is half input rate, so 4096 input samples
+    // produce 8192 output samples; under loop-wrap the signal continues
+    // beyond 8192 indefinitely. RMS in both halves should be ~0.5/sqrt(2).
+    expect(rms(out[0].subarray(1024, 4096))).toBeGreaterThan(0.2)
+    expect(rms(out[0].subarray(4096, 8192))).toBeGreaterThan(0.2)
   })
 
-  it('speed=2 produces output ~½ input length', () => {
+  it('speed=2 produces output that loops within the trim window', () => {
     const proc = new WSOLAProcessor()
     const input = sine(4096, 440, SR)
     postToProcessor(proc, { type: 'load', channels: [input], sampleRate: SR })
@@ -88,9 +85,10 @@ describe('WSOLAProcessor — stretch', () => {
       trim: { startSec: 0, endSec: 4096 / SR },
       fx: { speed: 2, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
     })
-    // After ~2048 samples of input, the loop wraps; just check output is non-zero
-    // and rms is comparable to input rms. Length-wise, in-window output ≈ input/2.
-    const out = drainBlocks(proc, 1, 32)
+    // At speed=2, 4096 input samples produce 2048 output before the loop wraps.
+    // Drain enough that we observe at least one wrap; assert RMS is sustained.
+    const out = drainBlocks(proc, 1, 32) // 4096 samples
     expect(rms(out[0].subarray(0, 2048))).toBeGreaterThan(0.1)
+    expect(rms(out[0].subarray(2048, 4096))).toBeGreaterThan(0.1) // post-wrap
   })
 })
