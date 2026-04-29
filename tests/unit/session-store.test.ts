@@ -95,4 +95,12 @@ describe('session store', () => {
     })
     expect(useSessionStore.getState().srManuallyAdjusted).toBe(false)
   })
+
+  it('resetEffects clears srManuallyAdjusted and restores defaults', () => {
+    useSessionStore.getState().setEffect({ sampleRateHz: 18000, bitDepth: 12 })
+    expect(useSessionStore.getState().srManuallyAdjusted).toBe(true)
+    useSessionStore.getState().resetEffects()
+    expect(useSessionStore.getState().effects).toEqual(defaultEffects)
+    expect(useSessionStore.getState().srManuallyAdjusted).toBe(false)
+  })
 })

@@ -52,6 +52,7 @@ interface SessionState {
   setTrim(trim: TrimPoints): void
   setEffect(patch: Partial<EffectParams>): void
   nudgeSampleRate(hz: number): void
+  resetEffects(): void
   setPlayback(patch: Partial<Playback>): void
   setEngineReady(ready: boolean): void
   navigate(route: Route): void
@@ -61,7 +62,7 @@ interface SessionState {
   reset(): void
 }
 
-const initial: Omit<SessionState, 'setSource' | 'clearSource' | 'setTrim' | 'setEffect' | 'nudgeSampleRate' | 'setPlayback' | 'setEngineReady' | 'navigate' | 'beginRender' | 'finishRender' | 'failRender' | 'reset'> = {
+const initial: Omit<SessionState, 'setSource' | 'clearSource' | 'setTrim' | 'setEffect' | 'nudgeSampleRate' | 'resetEffects' | 'setPlayback' | 'setEngineReady' | 'navigate' | 'beginRender' | 'finishRender' | 'failRender' | 'reset'> = {
   source: null,
   trim: defaultTrim,
   effects: defaultEffects,
@@ -94,6 +95,10 @@ export const useSessionStore = create<SessionState>((set, _get) => ({
   nudgeSampleRate: (hz) => set((s) => ({
     effects: { ...s.effects, sampleRateHz: hz },
   })),
+  resetEffects: () => set({
+    effects: defaultEffects,
+    srManuallyAdjusted: false,
+  }),
   setPlayback: (patch) => set((s) => ({ playback: { ...s.playback, ...patch } })),
   setEngineReady: (engineReady) => set({ engineReady }),
   navigate: (route) => set({ route }),

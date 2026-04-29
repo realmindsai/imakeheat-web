@@ -74,7 +74,7 @@ export function Effects() {
   }
 
   const reset = () => {
-    useSessionStore.getState().setEffect(defaultEffects)
+    useSessionStore.getState().resetEffects()
     engine.setEffect(defaultEffects)
   }
 
