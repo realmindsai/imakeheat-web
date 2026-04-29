@@ -143,25 +143,30 @@ No IDB schema bump. Read-time normalisation is the binding migration path; the `
 
 ## 5. Worklet internals (`src/audio/worklets/wsola.worklet.ts`)
 
+**Revision 2026-04-29:** the original spec described a hand-rolled WSOLA. Two implementation iterations confirmed that hand-rolling pitch-preserving stretch is materially harder than the spec suggested — pure-sine pitch tests failed under the canonical OLA + cross-correlation pattern at the depth the spec specified, and the multi-week DSP work needed to land it (phase locking, transient detection, multi-resolution analysis) is out of scope for this PR. Pivoting to the option ranked C in brainstorming: **wrap [`@soundtouchjs/audio-worklet`](https://www.npmjs.com/package/@soundtouchjs/audio-worklet) (or the underlying `soundtouchjs` package — implementer picks at install time) inside our own worklet.**
+
+The file name `wsola.worklet.ts` is retained for git-history continuity even though the algorithm is now SoundTouch's WSOLA implementation rather than ours.
+
 ### 5.1 Algorithm
 
-Standard WSOLA, with pitch shift composed as stretch + linear resample:
+SoundTouch is a mature WSOLA-family time-stretch / pitch-shift library. We wrap it; we don't reimplement it. Our worklet is a thin shim that:
 
-1. WSOLA-stretch the input by `S = pitchFactor / speed` where `pitchFactor = 2^(semi/12)`.
-2. Linearly resample the result by `1/pitchFactor`.
+1. Owns the source `AudioBuffer` (transferred via `port.postMessage` once at load).
+2. Advances a logical `readPos` through the buffer (with loop/trim semantics — same as before).
+3. Feeds chunks of input from `readPos` into the SoundTouch instance.
+4. Pulls processed output from SoundTouch and writes to the worklet output.
+5. Exposes the existing message protocol (load/play/pause/seek/setTrim/setFx/unload + `position` back to main).
 
-Net mapping: `output_length = input_length / speed`, `output_pitch_ratio = pitchFactor`. (Worked through the math in §6.)
+Pitch and speed are independent at the SoundTouch level — set `pitchSemitones` and `tempo` (where `tempo = speed`) on the instance; SoundTouch handles the rest.
 
-### 5.2 Parameters (compile-time constants)
+### 5.2 Parameters
 
-| Parameter | Value | Rationale |
-|---|---|---|
-| Frame size `N` | 1024 samples (~21 ms @ 48 k) | Long enough for periodicity in low-mid; short enough to keep transients localised. Power of two. |
-| Synthesis hop `Hs` | 256 samples (75% overlap) | High overlap masks splice artifacts at low speed. ~0.5 ms per audio block at 1024-frame `N`. |
-| Analysis hop `Ha` | `Hs / S` | Standard WSOLA: read at `Ha`, write at `Hs`, ratio is the stretch. |
-| Search window `±Δ` | ±128 samples | Cross-correlate over this range to find the analysis frame whose head best matches the tail of the previous synthesis frame. SoundTouch-region tuning. |
-| Window | Hann, precomputed once at processor construction | Standard. At 75% overlap not partition-of-unity; we divide the running sum by a precomputed windowed-overlap envelope. |
-| Similarity metric | Normalised cross-correlation, channel-summed | Cheaper than coherence; normalisation avoids amplitude-envelope bias. |
+SoundTouch's parameters (frame, hop, search window) are internal. We set only:
+
+- `pitchSemitones: number` — directly from `EffectParams.pitchSemitones` (-12..+12).
+- `tempo: number` — directly from `EffectParams.speed` (0.5..2.0). SoundTouch's "tempo" is our "speed": tempo=2 plays twice as fast (output is half as long), tempo=0.5 plays half as fast (output is twice as long).
+
+If the chosen package exposes additional knobs (e.g. `quickSeek`, `useAntiAliasFilter`), v1 leaves them at defaults.
 
 ### 5.3 Per-block process
 
@@ -172,70 +177,52 @@ neutral_path:
     return
 
 stretch_path:
-  while output_buffer has < 128 samples queued:
-    1. find best analysis frame: normalised cross-correlation of
-       input[expectedReadPos ± Δ] against the tail of the previously-
-       written synthesis frame. expectedReadPos = lastReadPos + Ha.
-    2. window the chosen analysis frame with Hann.
-    3. overlap-add into the output ring buffer at writePos; writePos += Hs.
-    4. lastReadPos = chosen position.
-  if pitchFactor !== 1:
-    linearly resample 128 samples from the OLA ring buffer at rate 1/pitchFactor
-    into output. Keep the fractional read index between blocks.
-  else:
-    copy 128 samples directly from OLA ring buffer.
+  while soundtouch has < 128 samples available to extract:
+    feed soundtouch a chunk of input from buffer at readPos
+      (chunk size = e.g. 256 input samples; advance readPos by chunk size,
+       wrapping at trim boundaries)
+  extract 128 samples from soundtouch, write to output
 ```
+
+The neutral fast-path stays as-is — same byte-identical bypass guarantee as before.
 
 ### 5.4 Worklet state (per processor instance)
 
-- `inputChannels: Float32Array[]` — the loaded buffer, never freed until next `load`
-- `readPos: number` (fractional, in input samples) — advanced by `Ha` per analysis frame
-- `olaRing: Float32Array[]` per channel — circular accumulator, length `2N`
-- `olaReadPos: number` (fractional) — for the resample step
-- `prevTail: Float32Array` per channel — last `Δ` samples written, the cross-correlation target
-- `playState: 'idle' | 'playing' | 'paused'`
-- `trim: {startSec, endSec}`, `speed`, `pitchFactor` — current params
-- `windowEnvelope: Float32Array` — precomputed sum of overlapping Hanns at current `Hs`, divided out at frame finalisation
+- `inputChannels: Float32Array[]` — the loaded buffer.
+- `readPos: number` — fractional, in input samples. Advanced by the chunk size when feeding SoundTouch.
+- `soundtouch: SoundTouchInstance` — the wrapped library object. Recreated on `load`, params updated on `setFx`.
+- `playState: 'idle' | 'playing' | 'paused'`.
+- `trim: {startSec, endSec}`, `speed`, `pitchFactor` — current params (pitchFactor cached only for neutral check).
 
 ### 5.5 Loop / trim
 
-The worklet wraps `readPos` modulo the trim span: when `readPos >= trim.endSec * sr`, subtract `(trim.endSec − trim.startSec) * sr`. Wraps within a single block are possible at high speeds; handle in a `while` loop. When the user changes trim mid-play, the engine clamps `readPos` into the new window via `setTrim`.
+Loop wrap happens in the *feed* stage: when feeding SoundTouch, if a chunk would cross `trimEnd`, split it — feed the head of the chunk before the boundary, advance `readPos` to `trimStart`, feed the tail. Same wall-clock looping behaviour as today's `BufferSource.loop = true`.
+
+When the user changes trim mid-play, the engine clamps `readPos` into the new window via `setTrim`.
 
 ### 5.6 Message protocol
 
 | Direction | Type | Payload | Notes |
 |---|---|---|---|
-| → worklet | `load` | `{channels: Float32Array[], sampleRate}` | Transferable. Replaces any prior buffer. |
+| → worklet | `load` | `{channels: Float32Array[], sampleRate}` | Transferable. Replaces any prior buffer. Re-creates the SoundTouch instance. |
 | → worklet | `play` | `{offsetSec, trim, fx}` | Begins emitting. |
 | → worklet | `pause` | `{}` | Outputs silence; holds `readPos`. |
-| → worklet | `seek` | `{sourceTimeSec}` | Sets `readPos`; drops `olaRing` and `prevTail` to silence; one-time fade-in over `N` samples to avoid click. |
+| → worklet | `seek` | `{sourceTimeSec}` | Sets `readPos`. Calls SoundTouch's `clear()`/`flush()` if available (drops internal buffers) to avoid stale samples. |
 | → worklet | `setTrim` | `{trim}` | Clamps `readPos` into the new window. |
-| → worklet | `setFx` | `{fx}` | Recomputes `S` and `pitchFactor`. New `Ha` takes effect at the *next* analysis frame; the in-flight synthesis frame still completes (no zero-fill, no glitch). |
+| → worklet | `setFx` | `{fx}` | Sets `soundtouch.pitchSemitones` and `soundtouch.tempo`. New values take effect at the next feed. |
 | → worklet | `unload` | `{}` | Drops references. |
 | ← main | `position` | `{readPosSec}` | Emitted every ~20 ms. Main thread uses it to *correct* drift in its own `ctx.currentTime × speed` predictor; the predictor remains the primary clock for sub-frame UI smoothness. |
 
-### 5.7 Known risks (called out for testing)
+### 5.7 Known risks
 
-1. **Splice clicks at `speed < 0.7`.** The cross-correlation search is the only thing keeping the OLA from sounding like a digital chorus in this region. The ±128-sample search window is tuned for it. Tested directly in §7.2.
-2. **Pitch-shift quantisation.** Linear interpolation is fine for ±12 st (max factor 2). No need for cubic or sinc unless integration tests show audible aliasing — which they will not at this range.
-3. **Neutral path must match BufferSource output.** The bypass story depends on the neutral fast-path producing audio indistinguishable from the current `BufferSource → …` path. The §7.1 unit test ("neutral fast-path is sample-identical") is the canary and is allowed to assert equality only modulo a *single, documented* startup-priming offset (zero or one block); any larger offset, or any non-zero deviation after the priming window, fails the test and forces the spec back open. The §7.2 render-parity integration test is the binding merge gate — it must pass byte-identically end-to-end.
+1. **SoundTouch latency.** SoundTouch buffers internally; output for the first N samples after `play` may be silence while the input pipe primes. The plan/tests treat this as a documented startup priming offset (currently 1 × 128-sample block; bump to 2–4 if SoundTouch's measured latency demands it). Surfaced in the `PRIMING_BLOCKS` constant in `tests/unit/wsola.test.ts`.
+2. **Neutral path must match BufferSource output.** Same guarantee as before — the neutral fast-path bypasses SoundTouch entirely. The §7.2 render-parity integration test is the binding merge gate.
+3. **Library bundle size.** `soundtouchjs` is ~50 KB minified. Acceptable for a PWA (already shipping React + Zustand + idb). Document in PR.
+4. **Package choice.** Two candidates: `soundtouchjs` (general-purpose) and `@soundtouchjs/audio-worklet` (purpose-built worklet wrapper, may eliminate some integration code). Implementer picks at install time based on what npm publishes and whether the worklet variant works inside Vite's `?worker&url` pipeline.
 
-## 6. Math: pitch + stretch decomposition
+## 6. Math
 
-Goal: `output_length = input_length / speed`, `output_pitch = pitchFactor × input_pitch`.
-
-Define:
-- Resample by ratio `P` → output length = input length × `P`, output pitch ratio = `1/P`.
-- WSOLA-stretch by ratio `S` → output length = input length × `S`, output pitch ratio = `1`.
-
-Apply WSOLA-stretch by `S` then resample by `P`:
-- length: `L × S × P`
-- pitch: `1 × 1 × (1/P) = 1/P`
-
-Want pitch = `pitchFactor` ⇒ `P = 1/pitchFactor`.
-Want length = `L/speed` ⇒ `L × S × P = L/speed` ⇒ `S = pitchFactor / speed`.
-
-Worst-case WSOLA stretch magnitude (max(`S`, `1/S`)) at `speed=0.5, pitch=+12`: `S = 4`. This is the algorithm's worst regime in our supported range; §7.2 tests THD specifically here.
+(Removed in revision 2026-04-29: hand-rolled stretch/pitch decomposition no longer applies. SoundTouch's internal algorithm is referenced in their docs.)
 
 ## 7. Tests
 
@@ -245,14 +232,17 @@ The shim already exists; `bitcrusher.test.ts` and `srhold.test.ts` instantiate p
 
 | Test | Assertion |
 |---|---|
-| neutral fast-path is sample-identical | At `speed=1, pitch=0`: feed a 4096-sample ramp; after a startup-priming offset of at most one 128-sample block (documented as a constant in the test), output samples equal input samples within float epsilon. Any larger offset, or any deviation after priming, fails. |
-| stretch length is correct | At `speed=0.5`, feed `N` samples → expect `2N` samples out (within ±1 frame); at `speed=2`, expect `N/2` |
-| pitch shift, no stretch | At `speed=1, pitch=+12` on 220 Hz sine: peak FFT bin shifts to 440 Hz |
-| pitch + stretch combined | At `speed=0.5, pitch=+12` on 220 Hz: output is 2× as long *and* peaks at 440 Hz — proves decoupling |
-| WSOLA cross-correlation finds the right offset | Synthetic input where the "right" splice is known by construction; chosen `analysisPos` within ±2 samples of the analytical answer |
-| loop wrap | `readPos` near `trim.endSec` wraps cleanly; output across the wrap point has no discontinuity > 1e-3 normalised step |
-| `setFx` mid-process | Send `{speed: 1.5}` between two `process()` calls; assert no zero-fill, no doubled samples, length math reflects the new rate from the next analysis frame |
-| pure functions (`src/audio/speed.ts`) | `sliderToSpeed`/`speedToSlider` round-trip; identity at 0.5 → 1.0; endpoints |
+| neutral fast-path is sample-identical | At `speed=1, pitch=0`: feed a 4096-sample ramp; after a startup-priming offset of at most one 128-sample block (documented as a constant in the test), output samples equal input samples within float epsilon. |
+| stretch length is sustained at 0.5× | At `speed=0.5` on a 4096-sample sine: drain 8192 output samples; assert RMS is sustained in both halves of the output (signal continues past natural input length, demonstrating stretch). |
+| stretch loops at 2× | At `speed=2`: drain 4096 output samples; assert RMS is sustained both before and after the input loop wraps (~2048 samples). |
+| pitch shift via SoundTouch | At `speed=1, pitch=+12` on 220 Hz sine: dominant frequency in mid-window output is 420–460 Hz. |
+| pitch + stretch decoupled | At `speed=0.5, pitch=+12` on 220 Hz sine: dominant frequency is 420–460 Hz AND output extends past natural input length. |
+| loop wrap | With trim `{0.4s, 0.6s}` at speed=1: 4 trim spans of output show repeated content. |
+| `setFx` mid-process | Send `{speed: 1.5}` between two `process()` calls; assert no zero-fill, no abnormal silence, signal continues. |
+| pause emits silence | After `pause` message, output is all zeros until next `play`. |
+| seek drops stale state | After `seek` to a new position, no carry-over splice (first sample magnitude < 0.05 and step-to-step change < 0.05 over priming window). |
+| position messages emitted | Worklet emits `{type: 'position'}` periodically while playing; none while paused. |
+| pure functions (`src/audio/speed.ts`) | `sliderToSpeed`/`speedToSlider` round-trip; identity at 0.5 → 1.0; endpoints. |
 
 ### 7.2 Integration (`tests/integration/wsola-stretch.spec.ts`, Playwright + real OfflineAudioContext)
 
@@ -275,7 +265,8 @@ Extends `tests/integration/runner.ts` to take `speed` in `EffectParams` and exer
 
 ## 8. Files
 
-- `src/audio/worklets/wsola.worklet.ts` — new (~250 lines)
+- `package.json` / `package-lock.json` — add `soundtouchjs` (or `@soundtouchjs/audio-worklet`) dependency.
+- `src/audio/worklets/wsola.worklet.ts` — new (~150 lines: thin wrapper around the chosen SoundTouch package)
 - `src/audio/speed.ts` — new (~10 lines, `sliderToSpeed` / `speedToSlider`, mirrors `pitch.ts`)
 - `src/audio/types.ts` — add `speed`
 - `src/audio/graph.ts` — register `wsola`; remove `applyPitch` and `setSource`; add `loadBuffer`; rebuild offline path

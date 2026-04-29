@@ -29,10 +29,12 @@
 
 | File | Action | Notes |
 |---|---|---|
+| `package.json`, `package-lock.json` | modify | add `soundtouchjs` runtime dep (v1 picks `soundtouchjs`; `@soundtouchjs/audio-worklet` is the fallback if Vite integration is rough) |
+| `src/types/soundtouchjs.d.ts` | create *if needed* | minimal `declare module` shim only if the package ships no types |
 | `src/audio/types.ts` | modify | add `speed: number` |
 | `src/audio/speed.ts` | create | `sliderToSpeed`/`speedToSlider`, ~10 lines, mirrors `pitch.ts` |
-| `src/audio/pitch.ts` | unchanged | consumer moves to inside the worklet |
-| `src/audio/worklets/wsola.worklet.ts` | create | ~250 lines, the DSP |
+| `src/audio/pitch.ts` | unchanged | retained as a public helper (the legacy render path in `tests/integration/runner.ts` still imports it) |
+| `src/audio/worklets/wsola.worklet.ts` | create | ~150 lines: thin SoundTouch wrapper. File name kept for git-history continuity even though the algorithm is SoundTouch's. |
 | `src/audio/graph.ts` | modify | register `wsola`; replace `setSource`/`applyPitch` with `loadBuffer`; rebuild offline path |
 | `src/audio/engine.ts` | modify | `currentSource` → `player`; source-time position math; port-message API |
 | `src/store/session.ts` | modify | `defaultEffects.speed = 1` |
@@ -309,11 +311,13 @@ git commit -m "feat: read-time speed normalisation in exports store"
 
 ---
 
-## Chunk 2: WSOLA worklet (built up TDD)
+## Chunk 2: SoundTouch-wrapping worklet (built up TDD)
 
-After this chunk: a fully unit-tested WSOLA worklet exists at `src/audio/worklets/wsola.worklet.ts` but is not yet wired into the engine. `npm run dev` is unaffected — pitch still works the old way, speed slider still does not exist. `npm test` covers the worklet in isolation; `npm run build` and CI continue to pass.
+**Revision 2026-04-29:** original plan ordered hand-rolled WSOLA build-up as Tasks 4–10. Two implementation iterations confirmed hand-rolled WSOLA isn't practical at this depth. Pivoting to wrap [`soundtouchjs`](https://www.npmjs.com/package/soundtouchjs) (or `@soundtouchjs/audio-worklet` if it integrates more cleanly with Vite). Tasks 4 (skeleton + neutral fast-path) is **kept as-shipped** at commit `0ff7fa9`. Tasks 5–10 are rewritten below.
 
-Build-up order: skeleton → fast path → stretch → pitch → cross-correlation → loop wrap → message protocol → position reporting.
+After this chunk: a fully unit-tested SoundTouch-wrapping worklet exists at `src/audio/worklets/wsola.worklet.ts` but is not yet wired into the engine. `npm run dev` is unaffected — pitch still works the old way, speed slider still does not exist. `npm test` covers the worklet in isolation; `npm run build` and CI continue to pass.
+
+Build-up order: install + integration → speed control → pitch control → loop wrap → control messages → position reporting.
 
 ### Task 4: Worklet skeleton with neutral fast-path (TDD)
 
@@ -533,17 +537,34 @@ git add src/audio/worklets/wsola.worklet.ts tests/unit/wsola.test.ts
 git commit -m "feat: WSOLA worklet skeleton with neutral fast-path"
 ```
 
+(Task 4 is already shipped at commit `0ff7fa9`. Subsequent tasks build on it.)
+
 ---
 
-### Task 5: WSOLA stretch (no pitch yet) — length correctness
+### Task 5: Install `soundtouchjs` and integrate stretch (TDD)
+
+After this task, the non-neutral branch of the worklet emits stretched output via SoundTouch. The two stretch tests (length sustained at 0.5×, loops at 2×) that previously lived in the deprecated hand-rolled WSOLA path are restored against the new implementation.
 
 **Files:**
+- Modify: `package.json` (add `soundtouchjs` dependency)
 - Modify: `src/audio/worklets/wsola.worklet.ts`
 - Modify: `tests/unit/wsola.test.ts`
 
-This task adds the OLA core: read at analysis hop `Ha = Hs / S` where `S = pitchFactor / speed` (with `pitchFactor === 1` for now), write at synthesis hop `Hs = 256`. Frame size `N = 1024`. Hann window, partition-of-unity divide. Cross-correlation search comes in Task 7. No pitch shift yet.
+- [ ] **Step 1: Pick the package and install**
 
-- [ ] **Step 1: Write failing tests**
+Two candidates from npm:
+- `soundtouchjs` — the long-running JS port. Plain ES module export.
+- `@soundtouchjs/audio-worklet` — wrapper that ships an AudioWorkletProcessor; may avoid integration code, but verify it works inside Vite's `?worker&url` pipeline.
+
+Default to `soundtouchjs` for v1 — fewer assumptions, more direct control. Switch to the worklet variant only if the basic integration runs into Vite issues.
+
+```bash
+npm install soundtouchjs
+```
+
+Verify the new dep is in `package.json` `dependencies` (not `devDependencies`) and `package-lock.json` is updated. Commit nothing yet.
+
+- [ ] **Step 2: Write failing tests for stretch**
 
 Append to `tests/unit/wsola.test.ts`:
 
@@ -560,18 +581,8 @@ function rms(buf: Float32Array): number {
   return Math.sqrt(s / buf.length)
 }
 
-function findFirstActive(buf: Float32Array, threshold = 1e-3): number {
-  for (let i = 0; i < buf.length; i++) if (Math.abs(buf[i]) > threshold) return i
-  return -1
-}
-
-function findLastActive(buf: Float32Array, threshold = 1e-3): number {
-  for (let i = buf.length - 1; i >= 0; i--) if (Math.abs(buf[i]) > threshold) return i
-  return -1
-}
-
-describe('WSOLAProcessor — stretch', () => {
-  it('speed=0.5 produces output ~2× input length', () => {
+describe('WSOLAProcessor — SoundTouch stretch', () => {
+  it('speed=0.5 produces sustained output past the natural input length', () => {
     const proc = new WSOLAProcessor()
     const input = sine(4096, 440, SR)
     postToProcessor(proc, { type: 'load', channels: [input], sampleRate: SR })
@@ -580,15 +591,14 @@ describe('WSOLAProcessor — stretch', () => {
       trim: { startSec: 0, endSec: 4096 / SR },
       fx: { speed: 0.5, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
     })
-    // Expect ~8192 samples of audible signal. Drain 80 blocks (10240 samples) to be safe.
-    const out = drainBlocks(proc, 1, 80)
-    const last = findLastActive(out[0])
-    // Allow ±N samples of imprecision due to OLA priming and frame-edge rounding.
-    expect(last).toBeGreaterThan(8192 - 1024)
-    expect(last).toBeLessThan(8192 + 1024)
+    const out = drainBlocks(proc, 1, 64) // 8192 output samples
+    // RMS in both halves; second half is past the input's natural end (4096
+    // input samples × speed=0.5 → 8192 output samples), proving stretch.
+    expect(rms(out[0].subarray(1024, 4096))).toBeGreaterThan(0.2)
+    expect(rms(out[0].subarray(4096, 8192))).toBeGreaterThan(0.2)
   })
 
-  it('speed=2 produces output ~½ input length', () => {
+  it('speed=2 loops within the trim window', () => {
     const proc = new WSOLAProcessor()
     const input = sine(4096, 440, SR)
     postToProcessor(proc, { type: 'load', channels: [input], sampleRate: SR })
@@ -597,153 +607,115 @@ describe('WSOLAProcessor — stretch', () => {
       trim: { startSec: 0, endSec: 4096 / SR },
       fx: { speed: 2, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
     })
-    // After ~2048 samples of input, the loop wraps; just check output is non-zero
-    // and rms is comparable to input rms. Length-wise, in-window output ≈ input/2.
+    // At speed=2, 4096 input → 2048 output before the loop wraps.
+    // Drain 4096 samples; assert RMS is sustained both pre- and post-wrap.
     const out = drainBlocks(proc, 1, 32)
     expect(rms(out[0].subarray(0, 2048))).toBeGreaterThan(0.1)
+    expect(rms(out[0].subarray(2048, 4096))).toBeGreaterThan(0.1) // post-wrap
   })
 })
 ```
 
-The first test asserts length (the headline property of the stretch). The second is a smoke test — at speed=2 the worklet wraps around the input loop quickly, so a strict end-of-signal assertion is misleading; instead we check that meaningful audio comes out at all.
+Run: `npx vitest run tests/unit/wsola.test.ts`. Both new tests should FAIL — the non-neutral path currently emits silence.
 
-- [ ] **Step 2: Run, confirm failure**
+- [ ] **Step 3: Wire SoundTouch into the worklet**
 
-Run: `npx vitest run tests/unit/wsola.test.ts`
-Expected: FAIL — current non-neutral path emits silence.
+In `src/audio/worklets/wsola.worklet.ts`:
 
-- [ ] **Step 3: Implement WSOLA OLA**
-
-Replace `src/audio/worklets/wsola.worklet.ts` with the full OLA implementation. Add to the file:
-
-1. Frame constants:
+1. Add the import. The exact import shape depends on the package; consult `node_modules/soundtouchjs/dist/` to confirm. The typical ES import is:
 
 ```ts
-const N = 1024            // frame size
-const HS = 256            // synthesis hop (75% overlap)
-const RING = 4 * N        // OLA ring buffer length, ample headroom
+import { SoundTouch, SimpleFilter } from 'soundtouchjs'
 ```
 
-2. Precomputed Hann window (constructor-time):
+If the package's exports are CommonJS-only and Vite balks, fall back to a default import or namespace import. The `processor-shim` already runs in worklet/Node-stub contexts; verify the package loads in jsdom (vitest will fail noisily if not).
+
+2. Add fields to the class:
 
 ```ts
-private hann = new Float32Array(N)
-private windowEnv = new Float32Array(HS) // partition-of-unity divisor
-// in constructor, after super():
-{
-  for (let i = 0; i < N; i++) this.hann[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (N - 1)))
-  // For Hs=256, N=1024 (overlap factor = N/Hs = 4), the sum-of-windows over one Hs is:
-  for (let i = 0; i < HS; i++) {
-    let s = 0
-    for (let k = 0; k < N / HS; k++) s += this.hann[i + k * HS] ** 2 // power-complementary
-    this.windowEnv[i] = Math.max(s, 1e-6)
+private soundtouch: any = null   // SoundTouch instance from the package
+private soundtouchFilter: any = null  // SimpleFilter wrapping a source
+private feedChunkSize = 1024     // input samples to feed per top-up cycle
+```
+
+3. On `load`: create a fresh SoundTouch instance. The exact API is package-specific; for `soundtouchjs` it's roughly:
+
+```ts
+this.soundtouch = new SoundTouch()
+this.soundtouch.pitchSemitones = 0
+this.soundtouch.tempo = 1
+// SimpleFilter takes a "source" object with extract(target, count) -> count.
+// Provide a custom source backed by this.channels + this.readPos that respects
+// the trim window and loop-wraps.
+this.soundtouchFilter = new SimpleFilter(this.makeSource(), this.soundtouch)
+```
+
+`this.makeSource()` returns an object with the SoundTouch source-interface shape (typically `{ extract(target, numFrames): number, position }` plus length-related fields). Implement it to read from `this.channels[0]` interleaved with `this.channels[1]` if stereo (SoundTouch interleaves), advance `this.readPos` by `numFrames`, and loop-wrap at `trimEnd`. Fill `target` with interleaved samples; return number of frames produced (always `numFrames` because we loop indefinitely).
+
+If the package documents a different source-shape (e.g. `WebAudioBufferSource` ingesting an `AudioBuffer`), use that directly and mirror loop semantics by re-pointing the source on wrap.
+
+4. On `setFx`: `this.soundtouch.tempo = fx.speed; this.soundtouch.pitchSemitones = fx.pitchSemitones`. (Pitch is wired here even though Task 6 has the explicit pitch tests — the line is one statement either way.)
+
+5. Replace the non-neutral branch in `process()`:
+
+```ts
+// Non-neutral: pull from the SoundTouch filter chain.
+const blockSize = output[0].length
+const interleaved = new Float32Array(blockSize * 2) // SoundTouch is stereo-interleaved
+const framesProduced = this.soundtouchFilter.extract(interleaved, blockSize)
+if (framesProduced < blockSize) {
+  // Pad shortfall with silence (priming or end-of-input).
+  for (let c = 0; c < output.length; c++) output[c]?.fill(0)
+}
+// De-interleave into output channels.
+for (let i = 0; i < framesProduced; i++) {
+  for (let c = 0; c < output.length && c < 2; c++) {
+    output[c][i] = interleaved[i * 2 + c] ?? 0
   }
 }
 ```
 
-3. OLA state:
+(Adjust the channel handling: if input is mono and the worklet output is mono, only one channel matters; if input is mono and output is stereo, duplicate.)
 
-```ts
-private olaRing: Float32Array[] = [] // per channel
-private olaWritePos = 0              // write head in ring (samples emitted so far)
-private olaReadPos = 0               // read head
-```
+6. On `seek`: drop SoundTouch's internal buffers (e.g. `this.soundtouch.clear()` if available; otherwise re-create the instance) so stale samples don't bleed across the seek.
 
-(Initialise the ring on `load`: `this.olaRing = msg.channels.map(() => new Float32Array(RING))`.)
+- [ ] **Step 4: Run, iterate, confirm passing**
 
-4. Replace the non-neutral branch in `process()`:
+Run: `npx vitest run tests/unit/wsola.test.ts`. Expected: all 4 cases pass (Task 4's neutral-fast-path + the 2 new stretch tests + any pre-existing wsola-test cases that were retained).
 
-```ts
-// Non-neutral path: ensure ≥ output.length samples are queued in olaRing.
-const need = output[0].length
-while (this.olaWritePos - this.olaReadPos < need) {
-  this.synthesizeOneFrame()
-}
-this.drainToOutput(output, need)
-```
+If a stretch test fails:
+- Check whether SoundTouch produces output at all — log `framesProduced` from the first few `process()` calls.
+- Check whether `tempo` is being set to `fx.speed` correctly (SoundTouch's "tempo" semantics: tempo=2 means twice as fast = output is half as long; matches our spec).
+- Check whether the source is interleaving channels correctly (SoundTouch expects interleaved `LRLRLR…`).
+- Bump `PRIMING_BLOCKS` if SoundTouch's internal latency exceeds one 128-sample block.
 
-5. New methods:
+- [ ] **Step 5: Run typecheck**
 
-```ts
-private synthesizeOneFrame(): void {
-  // For each output channel, take a Hann-windowed frame from the input at this.readPos,
-  // overlap-add into the ring at this.olaWritePos, then advance olaWritePos by HS.
-  const S = this.pitchFactor / this.speed
-  const Ha = HS / S
-  const channels = this.channels.length
-  if (channels === 0) return
+Run: `npm run typecheck`. Expected: clean. If `soundtouchjs` doesn't ship types, add `// @ts-expect-error` on the import line and a one-line comment, OR write a minimal `declare module 'soundtouchjs'` shim in `src/types/soundtouchjs.d.ts`.
 
-  // Pull one analysis frame; wrap readPos into [trimStart, trimEnd).
-  const startInt = Math.floor(this.readPos)
-  const span = Math.max(1, this.trimEnd - this.trimStart)
-
-  for (let c = 0; c < channels; c++) {
-    const inCh = this.channels[c]
-    const ring = this.olaRing[c]
-    for (let n = 0; n < N; n++) {
-      // wrap each input sample read
-      let p = startInt + n
-      if (p >= this.trimEnd) p = this.trimStart + ((p - this.trimStart) % span)
-      const v = inCh[p] ?? 0
-      const ringIdx = (this.olaWritePos + n) % RING
-      ring[ringIdx] += v * this.hann[n]
-    }
-  }
-  this.olaWritePos += HS
-  this.readPos += Ha
-  // wrap readPos
-  if (this.readPos >= this.trimEnd) {
-    this.readPos = this.trimStart + ((this.readPos - this.trimStart) % span)
-  }
-}
-
-private drainToOutput(output: Float32Array[], need: number): void {
-  const channels = output.length
-  for (let i = 0; i < need; i++) {
-    const ringIdx = (this.olaReadPos + i) % RING
-    const envIdx = (this.olaReadPos + i) % HS
-    const norm = this.windowEnv[envIdx]
-    for (let c = 0; c < channels && c < this.olaRing.length; c++) {
-      output[c][i] = this.olaRing[c][ringIdx] / norm
-      this.olaRing[c][ringIdx] = 0 // clear behind read head
-    }
-  }
-  this.olaReadPos += need
-}
-```
-
-Note the `partition-of-unity` divisor: at Hs=256, N=1024, with squared Hann, the running sum is constant in steady-state but rolls in/out at the buffer edges. Dividing by `windowEnv` keeps amplitude flat.
-
-Also: on `load`/`play`/`seek`, reset `olaWritePos` and `olaReadPos` and clear the ring.
-
-- [ ] **Step 4: Run, confirm passing**
-
-Run: `npx vitest run tests/unit/wsola.test.ts`
-Expected: PASS, all cases (1 from Task 4 + 2 from Task 5).
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/audio/worklets/wsola.worklet.ts tests/unit/wsola.test.ts
-git commit -m "feat: WSOLA OLA stretch (no pitch yet, no correlation search)"
+git add package.json package-lock.json src/audio/worklets/wsola.worklet.ts tests/unit/wsola.test.ts src/types/soundtouchjs.d.ts 2>/dev/null || true
+git commit -m "feat: integrate soundtouchjs for stretch (independent speed control)"
 ```
+
+(The `|| true` guards against the type-shim file not existing if no types were needed.)
 
 ---
 
-### Task 6: Pitch shift via linear resample — decoupling test
+### Task 6: Pitch control via SoundTouch (TDD)
+
+After this task, pitch and speed are independently controllable. Most of the wiring already happened in Task 5 (`soundtouch.pitchSemitones = fx.pitchSemitones` is set in `setFx`); this task adds the unit tests that assert pitch decoupling.
 
 **Files:**
-- Modify: `src/audio/worklets/wsola.worklet.ts`
 - Modify: `tests/unit/wsola.test.ts`
-
-After this task, pitch and speed are independently controllable. The decomposition is: WSOLA-stretch by `S = pitchFactor / speed`, then linearly resample by `1/pitchFactor`. When `pitchFactor === 1`, the resample step is a copy.
 
 - [ ] **Step 1: Write failing tests**
 
 Append to `tests/unit/wsola.test.ts`:
 
 ```ts
-// Naive zero-cross frequency estimator. Assumes monotonic mid-band sine.
 function dominantFreqHz(buf: Float32Array, sr: number): number {
   let crossings = 0
   for (let i = 1; i < buf.length; i++) {
@@ -762,14 +734,13 @@ describe('WSOLAProcessor — pitch shift', () => {
       trim: { startSec: 0, endSec: 8192 / SR },
       fx: { speed: 1, pitchSemitones: 12, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
     })
-    const out = drainBlocks(proc, 1, 64) // 8192 samples
-    // Skip priming, measure middle 4096 samples.
+    const out = drainBlocks(proc, 1, 64)
     const measured = dominantFreqHz(out[0].subarray(2048, 6144), SR)
     expect(measured).toBeGreaterThan(420)
     expect(measured).toBeLessThan(460)
   })
 
-  it('speed=0.5, pitch=+12 — output is ~2× as long AND ~440 Hz (decoupling)', () => {
+  it('speed=0.5, pitch=+12 — output is 2× as long AND ~440 Hz (decoupling)', () => {
     const proc = new WSOLAProcessor()
     const input = sine(4096, 220, SR)
     postToProcessor(proc, { type: 'load', channels: [input], sampleRate: SR })
@@ -778,324 +749,71 @@ describe('WSOLAProcessor — pitch shift', () => {
       trim: { startSec: 0, endSec: 4096 / SR },
       fx: { speed: 0.5, pitchSemitones: 12, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
     })
-    const out = drainBlocks(proc, 1, 80) // 10240 samples; expect ~8192 of signal
-    // Measure pitch in the middle of the stretched output.
+    const out = drainBlocks(proc, 1, 80)
     const measured = dominantFreqHz(out[0].subarray(2048, 6144), SR)
     expect(measured).toBeGreaterThan(420)
     expect(measured).toBeLessThan(460)
-    // Length: signal extends past 6144 (which input alone would not, since input is 4096).
+    // Length: signal extends past 6144 (input alone is 4096).
     expect(rms(out[0].subarray(4500, 6500))).toBeGreaterThan(0.1)
   })
 })
 ```
 
-- [ ] **Step 2: Run, confirm failure**
+- [ ] **Step 2: Run, expect pass on first try**
 
-Run: `npx vitest run tests/unit/wsola.test.ts`
-Expected: FAIL — pitch shift not implemented; output frequency will still be 220 Hz.
+Because Task 5 already wires `soundtouch.pitchSemitones = fx.pitchSemitones` in `setFx`, both new pitch tests should pass without any new worklet code. Run: `npx vitest run tests/unit/wsola.test.ts`. Expect 6 cases pass.
 
-- [ ] **Step 3: Implement linear resample post-OLA**
+If they don't:
+- Verify that SoundTouch's `pitchSemitones` is being set BEFORE the first `extract()` call after `play`. Some packages require setting params before first call; if so, set in the `play` branch as well.
+- Check whether the 220 Hz sine duration (8192 / 48000 ≈ 0.17s) is long enough; SoundTouch may need 50+ ms of priming. Bump input length to 16384 if needed.
 
-Replace `drainToOutput` and add a fractional read head. State:
+- [ ] **Step 3: Run typecheck**
 
-```ts
-private olaReadPosFrac = 0 // fractional read index into ring buffer
-```
+Run: `npm run typecheck`. Expected: clean.
 
-Modified drain:
-
-```ts
-private drainToOutput(output: Float32Array[], need: number): void {
-  const channels = output.length
-  if (this.pitchFactor === 1) {
-    for (let i = 0; i < need; i++) {
-      const ringIdx = (this.olaReadPos + i) % RING
-      const envIdx = (this.olaReadPos + i) % HS
-      const norm = this.windowEnv[envIdx]
-      for (let c = 0; c < channels && c < this.olaRing.length; c++) {
-        output[c][i] = this.olaRing[c][ringIdx] / norm
-        this.olaRing[c][ringIdx] = 0
-      }
-    }
-    this.olaReadPos += need
-    return
-  }
-
-  // Linear resample: read at rate 1/pitchFactor through the ring.
-  const step = 1 / this.pitchFactor
-  for (let i = 0; i < need; i++) {
-    const fracPos = this.olaReadPosFrac + i * step
-    const base = Math.floor(fracPos)
-    const frac = fracPos - base
-    const idx0 = (this.olaReadPos + base) % RING
-    const idx1 = (this.olaReadPos + base + 1) % RING
-    const envIdx0 = (this.olaReadPos + base) % HS
-    const envIdx1 = (this.olaReadPos + base + 1) % HS
-    const norm0 = this.windowEnv[envIdx0]
-    const norm1 = this.windowEnv[envIdx1]
-    for (let c = 0; c < channels && c < this.olaRing.length; c++) {
-      const a = this.olaRing[c][idx0] / norm0
-      const b = this.olaRing[c][idx1] / norm1
-      output[c][i] = a + (b - a) * frac
-    }
-  }
-  // Advance read positions; consume up to floor(end) integer samples.
-  const consumed = Math.floor(this.olaReadPosFrac + need * step)
-  for (let j = 0; j < consumed; j++) {
-    const idx = (this.olaReadPos + j) % RING
-    for (let c = 0; c < this.olaRing.length; c++) this.olaRing[c][idx] = 0
-  }
-  this.olaReadPos += consumed
-  this.olaReadPosFrac = (this.olaReadPosFrac + need * step) - consumed
-}
-```
-
-Also adjust the pre-drain check to account for the resample step: `need / pitchFactor` integer samples must be queued. Replace the loop in `process()` with:
-
-```ts
-const need = output[0].length
-const queueDemand = Math.ceil(need / this.pitchFactor) + N
-while (this.olaWritePos - this.olaReadPos < queueDemand) {
-  this.synthesizeOneFrame()
-}
-this.drainToOutput(output, need)
-```
-
-- [ ] **Step 4: Run, confirm passing**
-
-Run: `npx vitest run tests/unit/wsola.test.ts`
-Expected: PASS, all cases.
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add src/audio/worklets/wsola.worklet.ts tests/unit/wsola.test.ts
-git commit -m "feat: WSOLA pitch shift via linear resample (decoupled from speed)"
+git add tests/unit/wsola.test.ts
+git commit -m "test: pitch-decoupling assertions on soundtouch worklet"
 ```
+
+(If Task 6 ends up needing worklet code changes — e.g. setting pitch in both `play` and `setFx` — include `src/audio/worklets/wsola.worklet.ts` in the add.)
 
 ---
 
-### Task 7: WSOLA cross-correlation search
-
-**Files:**
-- Modify: `src/audio/worklets/wsola.worklet.ts`
-- Modify: `tests/unit/wsola.test.ts`
-
-Up to now, the analysis read pointer advances by `Ha` regardless of phase alignment. WSOLA's contribution is to *search* a small window around the expected position for the best phase match against the previously written synthesis frame. This drops splice-related artifacts dramatically at low speeds.
-
-- [ ] **Step 1: Write failing test (spectral concentration)**
-
-A 4-tap moving-average smoother on a pure sine attenuates almost nothing, so an `rmsSm/rmsRaw` test would not actually fail without correlation. Use a spectral concentration test instead: the energy of a pure sine should be concentrated in a narrow band around its true frequency, even after WSOLA stretch. Splice clicks broaden the spectrum.
-
-Append to `tests/unit/wsola.test.ts`:
-
-```ts
-// Crude single-bin DFT magnitude. Returns |X(f)| for one freq bin.
-function dftMag(buf: Float32Array, freq: number, sr: number): number {
-  let re = 0, im = 0
-  const w = (-2 * Math.PI * freq) / sr
-  for (let i = 0; i < buf.length; i++) {
-    re += buf[i] * Math.cos(w * i)
-    im += buf[i] * Math.sin(w * i)
-  }
-  return Math.sqrt(re * re + im * im) / buf.length
-}
-
-function totalEnergy(buf: Float32Array): number {
-  let s = 0
-  for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i]
-  return s
-}
-
-describe('WSOLAProcessor — cross-correlation search', () => {
-  it('at speed=0.5 on a 100 Hz sine, energy concentrates in a narrow band around 100 Hz', () => {
-    const proc = new WSOLAProcessor()
-    const input = sine(8192, 100, SR)
-    postToProcessor(proc, { type: 'load', channels: [input], sampleRate: SR })
-    postToProcessor(proc, {
-      type: 'play', offsetSec: 0,
-      trim: { startSec: 0, endSec: 8192 / SR },
-      fx: { speed: 0.5, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
-    })
-    const out = drainBlocks(proc, 1, 128)
-    // Skip 1024 priming samples; analyse a 4096-sample window in the steady-state.
-    const window = out[0].subarray(1024, 5120)
-    const inBand =
-      dftMag(window, 95, SR) ** 2 +
-      dftMag(window, 100, SR) ** 2 +
-      dftMag(window, 105, SR) ** 2
-    // Total energy normalisation: total power ≈ ∫|X(f)|^2 df, but the proxy
-    // we use is simply (mean-square of the time-domain signal), which by
-    // Parseval is proportional to the integrated spectrum.
-    const total = totalEnergy(window) / window.length
-    // Without correlation, splice clicks broaden the spectrum and the
-    // in-band ratio drops below 0.5. With correlation it stays well above.
-    expect(inBand / total).toBeGreaterThan(0.6)
-  })
-})
-```
-
-Run Task 5's implementation against this test before adding correlation, to *confirm it actually fails*. If the test passes without correlation, tighten the threshold (try 0.8 or 0.9) until it fails — then add correlation and confirm it passes.
-
-- [ ] **Step 2: Run, confirm failure**
-
-Run: `npx vitest run tests/unit/wsola.test.ts`
-Expected: FAIL — without correlation, splice clicks broaden the spectrum; the in-band ratio drops below 0.6.
-
-- [ ] **Step 3: Implement cross-correlation search against the synthesis tail**
-
-Canonical WSOLA correlates the *head* of each candidate analysis frame against the *tail of the most recently emitted synthesis frame* (i.e. content already committed to the OLA ring just behind the current write head). This way splice continuity is enforced against what was actually output, not against a prior input snippet.
-
-Add constants:
-
-```ts
-const SEARCH_DELTA = 128       // ± samples around expected analysis position
-const TAIL_LEN = 2 * SEARCH_DELTA // length of synthesis-tail window used for correlation
-```
-
-Add state:
-
-```ts
-private synthTail: Float32Array[] = []  // last TAIL_LEN samples committed to olaRing per channel
-private hasSynthTail = false             // false until the first frame has been emitted
-```
-
-Initialise on `load`/`play`/`seek`: `this.synthTail = msg.channels.map(() => new Float32Array(TAIL_LEN))` and set `this.hasSynthTail = false`.
-
-Replace the analysis-position computation in `synthesizeOneFrame()`:
-
-```ts
-private synthesizeOneFrame(): void {
-  const S = this.pitchFactor / this.speed
-  const Ha = HS / S
-  const channels = this.channels.length
-  if (channels === 0) return
-
-  const expected = this.readPos
-  const bestPos = this.hasSynthTail ? this.searchBestAlignment(expected) : expected
-  const startInt = Math.floor(bestPos)
-  const span = Math.max(1, this.trimEnd - this.trimStart)
-
-  for (let c = 0; c < channels; c++) {
-    const inCh = this.channels[c]
-    const ring = this.olaRing[c]
-    for (let n = 0; n < N; n++) {
-      let p = startInt + n
-      if (p >= this.trimEnd) p = this.trimStart + ((p - this.trimStart) % span)
-      const v = inCh[p] ?? 0
-      const ringIdx = (this.olaWritePos + n) % RING
-      ring[ringIdx] += v * this.hann[n]
-    }
-  }
-
-  // Capture the synthesis tail: the last TAIL_LEN samples just written to
-  // the ring, in (already-windowed, already-overlap-added) output space —
-  // divided by the windowEnv so the tail is comparable against raw input
-  // candidates during the next call's correlation.
-  for (let c = 0; c < channels; c++) {
-    const ring = this.olaRing[c]
-    const writeEnd = this.olaWritePos + N
-    for (let n = 0; n < TAIL_LEN; n++) {
-      const ringIdx = (writeEnd - TAIL_LEN + n + RING) % RING
-      const envIdx = (writeEnd - TAIL_LEN + n + HS * 1000) % HS // safely positive
-      this.synthTail[c][n] = ring[ringIdx] / Math.max(this.windowEnv[envIdx], 1e-6)
-    }
-  }
-  this.hasSynthTail = true
-
-  this.olaWritePos += HS
-  this.readPos = bestPos + Ha
-  if (this.readPos >= this.trimEnd) {
-    this.readPos = this.trimStart + ((this.readPos - this.trimStart) % span)
-  }
-}
-
-private searchBestAlignment(expected: number): number {
-  // For each candidate offset, take TAIL_LEN raw input samples starting at
-  // (cand) and correlate against the recent synthesis tail. Highest
-  // normalised cross-correlation wins. The candidate's "head" matches the
-  // tail of what's already been emitted, so the next OLA splice has phase
-  // continuity.
-  const span = Math.max(1, this.trimEnd - this.trimStart)
-  const lo = Math.max(this.trimStart, Math.floor(expected) - SEARCH_DELTA)
-  const hi = Math.min(this.trimEnd - N, Math.floor(expected) + SEARCH_DELTA)
-  let bestScore = -Infinity
-  let bestPos = expected
-  for (let cand = lo; cand <= hi; cand++) {
-    let score = 0
-    let normA = 0
-    let normB = 0
-    for (let c = 0; c < this.channels.length; c++) {
-      const inCh = this.channels[c]
-      const tail = this.synthTail[c]
-      for (let n = 0; n < TAIL_LEN; n++) {
-        let p = cand + n
-        if (p >= this.trimEnd) p = this.trimStart + ((p - this.trimStart) % span)
-        const a = inCh[p] ?? 0
-        const b = tail[n]
-        score += a * b
-        normA += a * a
-        normB += b * b
-      }
-    }
-    const norm = Math.sqrt(normA * normB) + 1e-9
-    const normScore = score / norm
-    if (normScore > bestScore) {
-      bestScore = normScore
-      bestPos = cand
-    }
-  }
-  return bestPos
-}
-```
-
-The correlation target (`synthTail`) is now what the listener actually heard, not a copy of input. This is canonical WSOLA.
-
-- [ ] **Step 4: Run, confirm passing**
-
-Run: `npx vitest run tests/unit/wsola.test.ts`
-Expected: PASS, all cases.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/audio/worklets/wsola.worklet.ts tests/unit/wsola.test.ts
-git commit -m "feat: WSOLA cross-correlation analysis-frame search"
-```
-
----
-
-### Task 8: Loop wrap correctness inside trim window
+### Task 7: Loop wrap correctness inside trim window
 
 **Files:**
 - Modify: `tests/unit/wsola.test.ts`
 
-The wrap logic was added piecemeal in earlier tasks. This task adds an explicit test to lock in the behaviour and catch regressions.
+The `makeSource()` written in Task 5 should already loop-wrap when feeding SoundTouch. This task adds an explicit test to lock in the behaviour and catch regressions.
 
-- [ ] **Step 1: Write failing test (or verify pass under existing implementation)**
+- [ ] **Step 1: Write the test**
 
 Append to `tests/unit/wsola.test.ts`:
 
 ```ts
+function ramp(n: number): Float32Array {
+  const out = new Float32Array(n)
+  for (let i = 0; i < n; i++) out[i] = i / n
+  return out
+}
+
 describe('WSOLAProcessor — loop wrap', () => {
-  it('loops within trim window indefinitely', () => {
+  it('loops within trim window indefinitely at neutral', () => {
     const proc = new WSOLAProcessor()
-    // Ramp from 0..1 over 1 second; trim window is the middle 0.2s (4800..14400 at 48k? No: 0.4s..0.6s = 19200..28800).
-    // Use a sawtooth that wraps inside the trim window so the loop boundary is observable.
-    const input = ramp(SR) // 1.0s
+    const input = ramp(SR)
     postToProcessor(proc, { type: 'load', channels: [input], sampleRate: SR })
     postToProcessor(proc, {
       type: 'play', offsetSec: 0.4,
       trim: { startSec: 0.4, endSec: 0.6 },
       fx: { speed: 1, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
     })
-    // Drain 4 trim spans worth of output. Trim span = 0.2s = 9600 samples.
+    // Trim span = 0.2s = 9600 samples. Drain 4 spans.
     const out = drainBlocks(proc, 1, Math.ceil((9600 * 4) / BLOCK))
-    // Output should be 4 repetitions of input[19200..28800].
     const span = 9600
-    for (let rep = 0; rep < 4; rep++) {
-      // Sample 5 points across each span; tolerate priming by skipping rep 0.
-      if (rep === 0) continue
+    for (let rep = 1; rep < 4; rep++) {
       for (let frac = 0.1; frac < 1.0; frac += 0.2) {
         const offset = Math.floor(frac * span)
         const o = rep * span + offset
@@ -1107,27 +825,26 @@ describe('WSOLAProcessor — loop wrap', () => {
 })
 ```
 
+This exercises the neutral fast-path's wrap. The non-neutral path's wrap is exercised implicitly by Task 5's `speed=2 loops` test.
+
 - [ ] **Step 2: Run**
 
-Run: `npx vitest run tests/unit/wsola.test.ts`
-If this passes already (most likely — wrap was implemented in T4/T5), commit and move on. If not, fix the wrap (likely in `processNeutral` or `synthesizeOneFrame`).
+Run: `npx vitest run tests/unit/wsola.test.ts`. Expect 7 cases pass. If wrap fails, fix in `processNeutral` and/or `makeSource()`.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add tests/unit/wsola.test.ts
+git add tests/unit/wsola.test.ts src/audio/worklets/wsola.worklet.ts 2>/dev/null
 git commit -m "test: WSOLA loop-wrap regression test"
 ```
 
 ---
 
-### Task 9: Pause / seek / setFx / setTrim mid-process
+### Task 8: Pause / seek / setFx / setTrim mid-process
 
 **Files:**
 - Modify: `src/audio/worklets/wsola.worklet.ts`
 - Modify: `tests/unit/wsola.test.ts`
-
-Most of these handlers exist after Task 4; this task adds mid-process semantics tests and the seek-fade-in.
 
 - [ ] **Step 1: Write failing tests**
 
@@ -1144,15 +861,15 @@ describe('WSOLAProcessor — control messages', () => {
       trim: { startSec: 0, endSec: 8192 / SR },
       fx: { speed: 1, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
     })
-    drainBlocks(proc, 1, 4) // 512 samples played
+    drainBlocks(proc, 1, 4)
     postToProcessor(proc, { type: 'pause' })
-    const silent = drainBlocks(proc, 1, 4) // 512 samples while paused
+    const silent = drainBlocks(proc, 1, 4)
     for (let i = 0; i < silent[0].length; i++) {
       expect(silent[0][i]).toBe(0)
     }
   })
 
-  it('setFx({speed:1.5}) mid-process does not zero-fill or duplicate', () => {
+  it('setFx({speed:1.5}) mid-process does not cause long zero runs', () => {
     const proc = new WSOLAProcessor()
     const input = sine(16384, 440, SR)
     postToProcessor(proc, { type: 'load', channels: [input], sampleRate: SR })
@@ -1161,13 +878,12 @@ describe('WSOLAProcessor — control messages', () => {
       trim: { startSec: 0, endSec: 16384 / SR },
       fx: { speed: 1, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
     })
-    const phase1 = drainBlocks(proc, 1, 32) // 4096 samples at speed=1
+    const phase1 = drainBlocks(proc, 1, 32)
     postToProcessor(proc, {
       type: 'setFx',
       fx: { speed: 1.5, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
     })
     const phase2 = drainBlocks(proc, 1, 32)
-    // No long zero runs (>= 64 samples) in either phase, modulo priming.
     function maxZeroRun(buf: Float32Array): number {
       let cur = 0, max = 0
       for (let i = 0; i < buf.length; i++) {
@@ -1180,7 +896,7 @@ describe('WSOLAProcessor — control messages', () => {
     expect(maxZeroRun(phase2.subarray(BLOCK))).toBeLessThan(64)
   })
 
-  it('seek drops OLA state to avoid splice clicks', () => {
+  it('seek drops SoundTouch state to avoid splice clicks', () => {
     const proc = new WSOLAProcessor()
     const input = sine(SR, 440, SR)
     postToProcessor(proc, { type: 'load', channels: [input], sampleRate: SR })
@@ -1192,10 +908,8 @@ describe('WSOLAProcessor — control messages', () => {
     drainBlocks(proc, 1, 16)
     postToProcessor(proc, { type: 'seek', sourceTimeSec: 0.5 })
     const after = drainBlocks(proc, 1, 16)
-    // After seek the OLA state is dropped, so the first ~N samples are
-    // ramp-in from zero. Assert that:
-    //   (a) the first sample is small (no carry-over from before seek), and
-    //   (b) sample-to-sample steps stay small (no splice click).
+    // First sample after seek should be small (no carry-over) and the
+    // sample-to-sample step should stay small (no splice click).
     expect(Math.abs(after[0][0])).toBeLessThan(0.05)
     for (let i = 1; i < 256; i++) {
       expect(Math.abs(after[0][i] - after[0][i - 1])).toBeLessThan(0.05)
@@ -1204,43 +918,24 @@ describe('WSOLAProcessor — control messages', () => {
 })
 ```
 
-- [ ] **Step 2: Run, confirm pass/fail per test**
+- [ ] **Step 2: Run; iterate**
 
-Run: `npx vitest run tests/unit/wsola.test.ts`
-Expected: pause and setFx tests likely pass (handlers exist already). Seek test may fail if `seek` doesn't reset OLA state.
+Run: `npx vitest run tests/unit/wsola.test.ts`. The `pause` test likely passes already (the worklet's early-return-silence path covers paused state). The `setFx` test depends on whether setting `tempo`/`pitchSemitones` on SoundTouch mid-stream causes glitches; if it does, the fix is to call `clear()` in `setFx` after updating params (accept brief silence at the transition rather than glitch). The `seek` test requires SoundTouch state to be dropped — typically a `clear()` call.
 
-- [ ] **Step 3: Make seek reset OLA + synthTail**
+- [ ] **Step 3: Run typecheck**
 
-In `onMessage` `seek` branch:
+`npm run typecheck` clean.
 
-```ts
-case 'seek': {
-  this.readPos = Math.round(msg.sourceTimeSec * this.srcSampleRate)
-  for (const r of this.olaRing) r.fill(0)
-  for (const t of this.synthTail) t.fill(0)
-  this.hasSynthTail = false
-  this.olaWritePos = 0
-  this.olaReadPos = 0
-  this.olaReadPosFrac = 0
-  return
-}
-```
-
-- [ ] **Step 4: Run, confirm pass**
-
-Run: `npx vitest run tests/unit/wsola.test.ts`
-Expected: PASS, all cases.
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add src/audio/worklets/wsola.worklet.ts tests/unit/wsola.test.ts
-git commit -m "feat: WSOLA seek/pause/setFx mid-process semantics"
+git commit -m "feat: pause/seek/setFx mid-process semantics"
 ```
 
 ---
 
-### Task 10: Position reporting back to main thread
+### Task 9: Position reporting back to main thread
 
 **Files:**
 - Modify: `src/audio/worklets/wsola.worklet.ts`
@@ -1254,7 +949,7 @@ Append to `tests/unit/wsola.test.ts`. The spy replaces `proc.port` after constru
 function spyPortPosts(proc: any): any[] {
   const sent: any[] = []
   proc.port = {
-    onmessage: proc.port.onmessage, // preserve handler set in constructor
+    onmessage: proc.port.onmessage,
     postMessage: (data: any) => sent.push(data),
   }
   return sent
@@ -1271,7 +966,7 @@ describe('WSOLAProcessor — position reporting', () => {
       trim: { startSec: 0, endSec: 1 },
       fx: { speed: 1, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
     })
-    drainBlocks(proc, 1, 32) // 32 * 128 = 4096 samples ≈ 85 ms wall-clock at 48k
+    drainBlocks(proc, 1, 32)
     const positions = sent.filter((m) => m.type === 'position')
     expect(positions.length).toBeGreaterThan(0)
     const last = positions[positions.length - 1]
@@ -1292,26 +987,19 @@ describe('WSOLAProcessor — position reporting', () => {
     drainBlocks(proc, 1, 8)
     sent.length = 0
     postToProcessor(proc, { type: 'pause' })
-    drainBlocks(proc, 1, 64) // long pause window
+    drainBlocks(proc, 1, 64)
     expect(sent.filter((m) => m.type === 'position').length).toBe(0)
   })
 })
 ```
 
-- [ ] **Step 2: Run, confirm failure**
-
-Run: `npx vitest run tests/unit/wsola.test.ts`
-Expected: the "emits position messages" test FAILS (no posts); the "does not emit while paused" test passes by accident (no posts at all).
-
-- [ ] **Step 3: Implement position reporting on the playing path only**
-
-Add a counter and a post-every-N-blocks emission. The post must be guarded so it only fires when the worklet is actively rendering audio — never during `'idle'`/`'paused'`/`channels.length===0` early-returns:
+- [ ] **Step 2: Implement position reporting on the playing path only**
 
 ```ts
 private blocksSinceReport = 0
 private static readonly REPORT_EVERY_BLOCKS = 8 // ~21 ms at 48k
 
-// Inside process(), at the *bottom* of both the neutral and non-neutral
+// Inside process(), at the bottom of both the neutral and non-neutral
 // render branches (i.e. after audio has actually been written to output),
 // before the final `return true`:
 this.blocksSinceReport++
@@ -1324,14 +1012,17 @@ if (this.blocksSinceReport >= WSOLAProcessor.REPORT_EVERY_BLOCKS) {
 }
 ```
 
-Crucially, the early-return paths (state !== 'playing', no channels) `return true` *before* this block runs, so paused/silent ticks emit no message — that's the second test.
+The early-return paths (state !== 'playing', no channels) `return true` *before* this block runs, so paused/silent ticks emit no message — that's the second test.
 
-Also reset `blocksSinceReport = 0` on `pause`/`seek`/`unload` so the first post-resume position is fresh, and on `play` so post timing is deterministic.
+Reset `blocksSinceReport = 0` on `pause`/`seek`/`unload` and `play` so post timing is deterministic.
 
-- [ ] **Step 4: Run, confirm passing**
+- [ ] **Step 3: Run, confirm passing**
 
-Run: `npx vitest run tests/unit/wsola.test.ts`
-Expected: PASS, both new tests.
+Run: `npx vitest run tests/unit/wsola.test.ts`. Expect 11 cases pass.
+
+- [ ] **Step 4: Run typecheck**
+
+`npm run typecheck` clean.
 
 - [ ] **Step 5: Commit**
 
@@ -1339,6 +1030,32 @@ Expected: PASS, both new tests.
 git add src/audio/worklets/wsola.worklet.ts tests/unit/wsola.test.ts
 git commit -m "feat: WSOLA emits position messages every ~21ms (playing path only)"
 ```
+
+---
+
+### Task 10: Chunk 2 verification gate
+
+No code changes. Verify the worklet is fully ready before engine integration begins.
+
+- [ ] **Step 1: Run all unit tests**
+
+Run: `npm test`. Expect every test in the suite to pass cleanly with zero warnings.
+
+- [ ] **Step 2: Run typecheck**
+
+Run: `npm run typecheck`. Expect zero errors.
+
+- [ ] **Step 3: Run build**
+
+Run: `npm run build`. Expect successful build. This catches Vite-side issues that vitest doesn't see (e.g. `?worker&url` import resolution for `wsola.worklet.ts`, soundtouchjs bundle compatibility).
+
+- [ ] **Step 4: Smoke-check bundle size**
+
+Run `du -sh dist/assets/` after the build and note the new size. The PR description should include this delta — soundtouchjs adds ~50 KB.
+
+- [ ] **Step 5: No commit**
+
+Nothing to commit. If any of the above fails, fix it as a one-off and commit *that* fix; otherwise proceed to Chunk 3.
 
 ---
 
