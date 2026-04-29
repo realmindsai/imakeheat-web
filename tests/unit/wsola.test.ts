@@ -101,6 +101,29 @@ function dominantFreqHz(buf: Float32Array, sr: number): number {
   return (crossings * sr) / buf.length
 }
 
+describe('WSOLAProcessor — loop wrap', () => {
+  it('loops within trim window indefinitely at neutral', () => {
+    const proc = new WSOLAProcessor()
+    const input = ramp(SR)
+    postToProcessor(proc, { type: 'load', channels: [input], sampleRate: SR })
+    postToProcessor(proc, {
+      type: 'play', offsetSec: 0.4,
+      trim: { startSec: 0.4, endSec: 0.6 },
+      fx: { speed: 1, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
+    })
+    const out = drainBlocks(proc, 1, Math.ceil((9600 * 4) / BLOCK))
+    const span = 9600
+    for (let rep = 1; rep < 4; rep++) {
+      for (let frac = 0.1; frac < 1.0; frac += 0.2) {
+        const offset = Math.floor(frac * span)
+        const o = rep * span + offset
+        const expected = input[19200 + offset]
+        expect(out[0][o]).toBeCloseTo(expected, 2)
+      }
+    }
+  })
+})
+
 describe('WSOLAProcessor — pitch shift', () => {
   it('speed=1, pitch=+12 on 220 Hz sine produces ~440 Hz', () => {
     const proc = new WSOLAProcessor()
