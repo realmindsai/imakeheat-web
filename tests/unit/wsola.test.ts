@@ -124,6 +124,70 @@ describe('WSOLAProcessor — loop wrap', () => {
   })
 })
 
+describe('WSOLAProcessor — control messages', () => {
+  it('pause emits silence and holds readPos', () => {
+    const proc = new WSOLAProcessor()
+    const input = sine(8192, 440, SR)
+    postToProcessor(proc, { type: 'load', channels: [input], sampleRate: SR })
+    postToProcessor(proc, {
+      type: 'play', offsetSec: 0,
+      trim: { startSec: 0, endSec: 8192 / SR },
+      fx: { speed: 1, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
+    })
+    drainBlocks(proc, 1, 4)
+    postToProcessor(proc, { type: 'pause' })
+    const silent = drainBlocks(proc, 1, 4)
+    for (let i = 0; i < silent[0].length; i++) {
+      expect(silent[0][i]).toBe(0)
+    }
+  })
+
+  it('setFx({speed:1.5}) mid-process does not cause long zero runs', () => {
+    const proc = new WSOLAProcessor()
+    const input = sine(16384, 440, SR)
+    postToProcessor(proc, { type: 'load', channels: [input], sampleRate: SR })
+    postToProcessor(proc, {
+      type: 'play', offsetSec: 0,
+      trim: { startSec: 0, endSec: 16384 / SR },
+      fx: { speed: 1, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
+    })
+    const phase1 = drainBlocks(proc, 1, 32)
+    postToProcessor(proc, {
+      type: 'setFx',
+      fx: { speed: 1.5, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
+    })
+    const phase2 = drainBlocks(proc, 1, 32)
+    function maxZeroRun(buf: Float32Array): number {
+      let cur = 0, max = 0
+      for (let i = 0; i < buf.length; i++) {
+        if (Math.abs(buf[i]) < 1e-6) cur++
+        else { max = Math.max(max, cur); cur = 0 }
+      }
+      return Math.max(max, cur)
+    }
+    expect(maxZeroRun(phase1[0].subarray(BLOCK))).toBeLessThan(64)
+    expect(maxZeroRun(phase2[0].subarray(BLOCK))).toBeLessThan(64)
+  })
+
+  it('seek drops SoundTouch state to avoid splice clicks', () => {
+    const proc = new WSOLAProcessor()
+    const input = sine(SR, 440, SR)
+    postToProcessor(proc, { type: 'load', channels: [input], sampleRate: SR })
+    postToProcessor(proc, {
+      type: 'play', offsetSec: 0,
+      trim: { startSec: 0, endSec: 1 },
+      fx: { speed: 0.7, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
+    })
+    drainBlocks(proc, 1, 16)
+    postToProcessor(proc, { type: 'seek', sourceTimeSec: 0.5 })
+    const after = drainBlocks(proc, 1, 16)
+    expect(Math.abs(after[0][0])).toBeLessThan(0.05)
+    for (let i = 1; i < 256; i++) {
+      expect(Math.abs(after[0][i] - after[0][i - 1])).toBeLessThan(0.05)
+    }
+  })
+})
+
 describe('WSOLAProcessor — pitch shift', () => {
   it('speed=1, pitch=+12 on 220 Hz sine produces ~440 Hz', () => {
     const proc = new WSOLAProcessor()

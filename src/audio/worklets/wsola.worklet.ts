@@ -69,7 +69,11 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
       }
       case 'seek': {
         this.readPos = Math.round(msg.sourceTimeSec * this.srcSampleRate)
-        if (this.filter) this.filter.clear()
+        // Re-init SoundTouch entirely to flush all internal delay buffers;
+        // filter.clear() alone leaves latency artifacts at the splice point.
+        if (this.soundtouch) {
+          this.initSoundTouch({ speed: this.speed, pitchSemitones: Math.round(Math.log2(this.pitchFactor) * 12) })
+        }
         return
       }
       case 'setTrim': {
