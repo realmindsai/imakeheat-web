@@ -53,4 +53,22 @@ describe('BitCrusherProcessor', () => {
     for (let i = 0; i < 256; i++) if (out[0][i] !== out[1][i]) differ++
     expect(differ).toBeGreaterThan(100)
   })
+
+  it('at bits=8, a +6 dBFS sine clips hard (peaks pinned to lattice edges, −1 and +127/128), not softly', () => {
+    const proc = new BitCrusherProcessor()
+    postToProcessor(proc, { bits: 8 })
+    const n = 4096
+    const sr = 48000
+    const f = 1000
+    // ~+6 dBFS: amplitude = 2.0 (overshoots ±1)
+    const sig = new Float32Array(n)
+    for (let i = 0; i < n; i++) sig[i] = 2 * Math.sin((2 * Math.PI * f * i) / sr)
+    const out = runProcessor(proc, [sig])
+    // Hard clip → output saturates at the lattice rails: -128/128 = -1 negative, 127/128 positive.
+    // Lattice step = 2 / 256 = 1/128. Highest positive code = 127/128 ≈ 0.9921875.
+    const maxOut = Math.max(...Array.from(out[0]))
+    const minOut = Math.min(...Array.from(out[0]))
+    expect(maxOut).toBeCloseTo(127 / 128, 4)
+    expect(minOut).toBeCloseTo(-1, 4)
+  })
 })
