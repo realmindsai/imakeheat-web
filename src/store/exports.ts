@@ -60,7 +60,9 @@ export function initExportsDb(): Promise<IDBPDatabase<ImaKeHeatDB>> {
 
 function normalize(rec: ExportRecord): ExportRecord {
   if (rec.fxSnapshot.speed !== undefined) return rec
-  return { ...rec, fxSnapshot: { speed: 1, ...rec.fxSnapshot } }
+  // Records written before the speed field existed: backfill speed=1.
+  // Guard above ensures we only reach here when speed is genuinely absent.
+  return { ...rec, fxSnapshot: { ...rec.fxSnapshot, speed: 1 } }
 }
 
 export async function putExport(rec: ExportRecord): Promise<void> {
