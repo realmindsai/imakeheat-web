@@ -8,22 +8,33 @@ import type { EffectParams, TrimPoints } from './types'
 export class AudioEngine {
   private ctx: AudioContext | null = null
   private graph: PreviewGraph | null = null
-  private currentSource: AudioBufferSourceNode | null = null
   private currentBuffer: AudioBuffer | null = null
-  private pausedOffsetSec = 0
+  private pausedSourceTimeSec = 0
   private playStartedAt = 0
+  private playStartedAtSrcSec = 0
   private isPlaying = false
   private lastTrim: TrimPoints | null = null
   private lastFx: EffectParams | null = null
+  private lastReportedPosSec = 0
 
   async ensureStarted(): Promise<void> {
     if (this.ctx) return
     this.ctx = new AudioContext({ latencyHint: 'interactive' })
     this.graph = await buildPreviewGraph(this.ctx)
+    this.graph.player.port.onmessage = (ev) => {
+      const data = ev.data as { type?: string; readPosSec?: number }
+      if (data.type === 'position' && typeof data.readPosSec === 'number') {
+        this.lastReportedPosSec = data.readPosSec
+      }
+    }
   }
 
   get context(): AudioContext | null {
     return this.ctx
+  }
+
+  get reportedPosSec(): number {
+    return this.lastReportedPosSec
   }
 
   getAnalyser(): AnalyserNode | null {
@@ -35,8 +46,9 @@ export class AudioEngine {
     const buf = await blob.arrayBuffer()
     const decoded = await this.ctx!.decodeAudioData(buf)
     this.currentBuffer = decoded
-    this.currentSource = null
-    this.pausedOffsetSec = 0
+    this.graph!.loadBuffer(decoded)
+    this.pausedSourceTimeSec = 0
+    this.playStartedAtSrcSec = 0
     this.isPlaying = false
     this.lastTrim = null
     this.lastFx = null
@@ -45,86 +57,81 @@ export class AudioEngine {
 
   async play(trim: TrimPoints, fx: EffectParams): Promise<void> {
     if (!this.ctx || !this.graph || !this.currentBuffer) throw new Error('engine not loaded')
-
     if (this.isPlaying) return
     this.lastTrim = trim
     this.lastFx = fx
     this.graph.applyEffects(fx)
 
-    const src = this.ctx.createBufferSource()
-    src.buffer = this.currentBuffer
-    this.graph.applyPitch(src, fx.pitchSemitones)
-    this.graph.setSource(src)
+    // Resume from where pause/seek left us, clamped into the current trim window.
+    // First play after load has pausedSourceTimeSec === 0; that clamps up to trim.startSec
+    // when trim.startSec > 0. Write the clamped value back to pausedSourceTimeSec so
+    // getCurrentSourceTimeSec(...) returns the right anchor before any pause has occurred.
+    const offsetSec = Math.max(
+      trim.startSec,
+      Math.min(trim.endSec, this.pausedSourceTimeSec || trim.startSec),
+    )
+    this.pausedSourceTimeSec = offsetSec
+    this.playStartedAtSrcSec = offsetSec
 
-    src.onended = () => {
-      if (src === this.currentSource) {
-        this.isPlaying = false
-        this.currentSource = null
-        this.pausedOffsetSec = 0
-      }
-    }
-
-    // Loop the trim window indefinitely until pause(). pausedOffsetSec
-    // is wall-clock time accumulated across pause/resume; mod by span so
-    // resume after long playback lands in-window.
-    const span = Math.max(0, trim.endSec - trim.startSec)
-    const offsetWithinSpan = span > 0 ? this.pausedOffsetSec % span : 0
-    const offset = trim.startSec + offsetWithinSpan
-    src.loop = true
-    src.loopStart = trim.startSec
-    src.loopEnd = trim.endSec
-    src.start(0, offset)
-    this.currentSource = src
+    this.graph.player.port.postMessage({
+      type: 'play',
+      offsetSec,
+      trim,
+      fx,
+    })
     this.playStartedAt = this.ctx.currentTime
     this.isPlaying = true
   }
 
   pause(): void {
-    if (!this.ctx || !this.currentSource) return
-    const elapsedSec = this.ctx.currentTime - this.playStartedAt
-    this.pausedOffsetSec += elapsedSec
-    this.currentSource.stop()
-    this.currentSource = null
+    if (!this.ctx || !this.graph) return
+    if (!this.isPlaying) return
+    const trim = this.lastTrim ?? { startSec: 0, endSec: this.currentBuffer?.duration ?? 0 }
+    this.pausedSourceTimeSec = this.getCurrentSourceTimeSec(trim)
+    this.graph.player.port.postMessage({ type: 'pause' })
     this.isPlaying = false
   }
 
   async seek(sourceTimeSec: number): Promise<void> {
-    if (!this.currentBuffer) return
-    const wasPlaying = this.isPlaying
-    if (this.currentSource) {
-      this.currentSource.stop()
-      this.currentSource = null
-      this.isPlaying = false
-    }
+    if (!this.currentBuffer || !this.graph) return
     const trim = this.lastTrim ?? { startSec: 0, endSec: this.currentBuffer.duration }
     const clamped = Math.max(trim.startSec, Math.min(trim.endSec, sourceTimeSec))
-    this.pausedOffsetSec = clamped - trim.startSec
-    if (wasPlaying && this.lastFx) {
-      await this.play(trim, this.lastFx)
+    this.pausedSourceTimeSec = clamped
+    this.graph.player.port.postMessage({ type: 'seek', sourceTimeSec: clamped })
+    if (this.isPlaying && this.ctx) {
+      this.playStartedAt = this.ctx.currentTime
+      this.playStartedAtSrcSec = clamped
     }
   }
 
   async setTrim(trim: TrimPoints): Promise<void> {
     this.lastTrim = trim
-    if (!this.isPlaying || !this.lastFx) return
-    const cur = this.getCurrentSourceTimeSec(trim)
-    await this.seek(cur)
+    if (!this.graph) return
+    if (this.isPlaying && this.ctx) {
+      const cur = this.getCurrentSourceTimeSec(trim)
+      this.playStartedAt = this.ctx.currentTime
+      this.playStartedAtSrcSec = cur
+    }
+    this.graph.player.port.postMessage({ type: 'setTrim', trim })
   }
 
   setEffect(fx: EffectParams): void {
+    if (!this.graph || !this.ctx) return
+    if (this.isPlaying && this.lastTrim && this.lastFx && this.lastFx.speed !== fx.speed) {
+      const cur = this.getCurrentSourceTimeSec(this.lastTrim)
+      this.playStartedAt = this.ctx.currentTime
+      this.playStartedAtSrcSec = cur
+    }
     this.lastFx = fx
-    if (!this.graph) return
     this.graph.applyEffects(fx)
-    if (this.currentSource) this.graph.applyPitch(this.currentSource, fx.pitchSemitones)
+    this.graph.player.port.postMessage({ type: 'setFx', fx })
   }
 
   unload(): void {
-    if (this.currentSource) {
-      this.currentSource.stop()
-      this.currentSource = null
-    }
+    if (this.graph) this.graph.player.port.postMessage({ type: 'unload' })
     this.currentBuffer = null
-    this.pausedOffsetSec = 0
+    this.pausedSourceTimeSec = 0
+    this.playStartedAtSrcSec = 0
     this.isPlaying = false
     this.lastTrim = null
     this.lastFx = null
@@ -132,8 +139,13 @@ export class AudioEngine {
 
   getCurrentSourceTimeSec(trim: TrimPoints): number {
     if (!this.ctx) return trim.startSec
-    if (!this.isPlaying) return trim.startSec + this.pausedOffsetSec
-    return trim.startSec + this.pausedOffsetSec + (this.ctx.currentTime - this.playStartedAt)
+    if (!this.isPlaying) return this.pausedSourceTimeSec
+    const wall = this.ctx.currentTime - this.playStartedAt
+    const speed = this.lastFx?.speed ?? 1
+    const pos = this.playStartedAtSrcSec + wall * speed
+    const span = trim.endSec - trim.startSec
+    if (span <= 0) return trim.startSec
+    return trim.startSec + (((pos - trim.startSec) % span) + span) % span
   }
 
   async startRecording(): Promise<ActiveRecording> {
@@ -143,8 +155,7 @@ export class AudioEngine {
 
   async render(buffer: AudioBuffer, trim: TrimPoints, fx: EffectParams): Promise<AudioBuffer> {
     const sr = buffer.sampleRate
-    const length = Math.max(1, Math.ceil(((trim.endSec - trim.startSec) /
-      Math.pow(2, fx.pitchSemitones / 12)) * sr))
+    const length = Math.max(1, Math.ceil(((trim.endSec - trim.startSec) / fx.speed) * sr))
     const offline = new OfflineAudioContext({
       numberOfChannels: buffer.numberOfChannels,
       length,
