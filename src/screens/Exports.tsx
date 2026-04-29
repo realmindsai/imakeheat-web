@@ -1,7 +1,7 @@
 // ABOUTME: Exports screen — browse, play, share, star, and delete rendered audio exports.
 // ABOUTME: Reads from IndexedDB via useExports hook; long-press a row to open the action menu.
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { TopBar } from '../components/TopBar'
 import { Eyebrow } from '../components/Eyebrow'
 import { Icon } from '../components/icons'
@@ -11,6 +11,8 @@ import { deleteExport, toggleStarred, type ExportRecord } from '../store/exports
 import { sharePlanWavBlob } from '../lib/share'
 import { relativeTime } from '../lib/time'
 import { navigate } from '../lib/router'
+import { engine } from '../audio/engine'
+import { useSessionStore } from '../store/session'
 
 type Filter = 'all' | 'wav' | 'starred'
 
@@ -20,6 +22,13 @@ export function Exports() {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const lastUrl = useRef<string | null>(null)
   const [playingId, setPlayingId] = useState<string | null>(null)
+
+  // Stop the live preview loop on entry — the user is now thinking about saved
+  // files, not the working source. Per-row playback below uses an HTMLAudioElement.
+  useEffect(() => {
+    engine.pause()
+    useSessionStore.getState().setPlayback({ isPlaying: false })
+  }, [])
 
   const filtered = items.filter((r) => {
     if (filter === 'wav') return r.kind === 'WAV'
