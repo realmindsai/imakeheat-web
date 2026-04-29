@@ -1,4 +1,4 @@
-// ABOUTME: EffectsRack — four parameter panels for bit depth, sample rate, pitch, and filter.
+// ABOUTME: EffectsRack — five parameter panels for bit depth, sample rate, pitch, speed, and filter.
 // ABOUTME: Writes changes to session store and pushes to engine worklet in real time.
 
 import { Param } from '../components/Param'
@@ -7,6 +7,7 @@ import { Range } from '../components/Range'
 import { Eyebrow } from '../components/Eyebrow'
 import { useSessionStore } from '../store/session'
 import { engine } from '../audio/engine'
+import { sliderToSpeed, speedToSlider } from '../audio/speed'
 
 export function EffectsRack() {
   const fx = useSessionStore((s) => s.effects)
@@ -58,6 +59,15 @@ export function EffectsRack() {
           className="absolute inset-0 z-10 h-[22px] cursor-pointer opacity-0" />
         <Slider value={pitchNorm} neutralCenter />
         <Range left="−12" right="+12" />
+      </Param>
+
+      <Param label="speed" sub="multiplier" value={`${fx.speed.toFixed(2)}x`}>
+        <input type="range" min="0" max="1" step="0.001"
+          value={speedToSlider(fx.speed)}
+          onChange={(e) => update({ speed: sliderToSpeed(Number(e.target.value)) })}
+          className="absolute inset-0 z-10 h-[22px] cursor-pointer opacity-0" />
+        <Slider value={speedToSlider(fx.speed)} neutralCenter />
+        <Range left="0.5×" right="2.0×" centerHint="1.0×" />
       </Param>
 
       <Param label="filter" sub="lo-pass / hi-pass"
