@@ -92,3 +92,45 @@ describe('WSOLAProcessor — stretch', () => {
     expect(rms(out[0].subarray(2048, 4096))).toBeGreaterThan(0.1) // post-wrap
   })
 })
+
+function dominantFreqHz(buf: Float32Array, sr: number): number {
+  let crossings = 0
+  for (let i = 1; i < buf.length; i++) {
+    if (buf[i - 1] <= 0 && buf[i] > 0) crossings++
+  }
+  return (crossings * sr) / buf.length
+}
+
+describe('WSOLAProcessor — pitch shift', () => {
+  it('speed=1, pitch=+12 on 220 Hz sine produces ~440 Hz', () => {
+    const proc = new WSOLAProcessor()
+    const input = sine(8192, 220, SR)
+    postToProcessor(proc, { type: 'load', channels: [input], sampleRate: SR })
+    postToProcessor(proc, {
+      type: 'play', offsetSec: 0,
+      trim: { startSec: 0, endSec: 8192 / SR },
+      fx: { speed: 1, pitchSemitones: 12, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
+    })
+    const out = drainBlocks(proc, 1, 64)
+    const measured = dominantFreqHz(out[0].subarray(2048, 6144), SR)
+    expect(measured).toBeGreaterThan(420)
+    expect(measured).toBeLessThan(460)
+  })
+
+  it('speed=0.5, pitch=+12 — output is 2× as long AND ~440 Hz (decoupling)', () => {
+    const proc = new WSOLAProcessor()
+    const input = sine(4096, 220, SR)
+    postToProcessor(proc, { type: 'load', channels: [input], sampleRate: SR })
+    postToProcessor(proc, {
+      type: 'play', offsetSec: 0,
+      trim: { startSec: 0, endSec: 4096 / SR },
+      fx: { speed: 0.5, pitchSemitones: 12, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
+    })
+    const out = drainBlocks(proc, 1, 80)
+    const measured = dominantFreqHz(out[0].subarray(2048, 6144), SR)
+    expect(measured).toBeGreaterThan(420)
+    expect(measured).toBeLessThan(460)
+    // Length: signal extends past 6144 (input alone is 4096).
+    expect(rms(out[0].subarray(4500, 6500))).toBeGreaterThan(0.1)
+  })
+})
