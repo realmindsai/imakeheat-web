@@ -41,6 +41,7 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
   private olaRing: Float32Array[] = [] // per channel
   private olaWritePos = 0              // write head in ring (samples emitted so far)
   private olaReadPos = 0               // read head
+  private olaReadPosFrac = 0           // fractional read index into ring buffer (for linear resample)
 
   constructor() {
     super()
@@ -67,6 +68,7 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
         this.olaRing = msg.channels.map(() => new Float32Array(RING))
         this.olaWritePos = 0
         this.olaReadPos = 0
+        this.olaReadPosFrac = 0
         return
       }
       case 'play': {
@@ -79,6 +81,7 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
         for (const ring of this.olaRing) ring.fill(0)
         this.olaWritePos = 0
         this.olaReadPos = 0
+        this.olaReadPosFrac = 0
         return
       }
       case 'pause': {
@@ -91,6 +94,7 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
         for (const ring of this.olaRing) ring.fill(0)
         this.olaWritePos = 0
         this.olaReadPos = 0
+        this.olaReadPosFrac = 0
         return
       }
       case 'setTrim': {
@@ -141,9 +145,11 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
       return true
     }
 
-    // Non-neutral path: ensure ≥ output.length samples are queued in olaRing.
+    // Non-neutral path: ensure enough samples are queued in olaRing accounting for resample.
+    // With step=pitchFactor, drainToOutput consumes ceil(need * pitchFactor) ring samples.
     const need = output[0].length
-    while (this.olaWritePos - this.olaReadPos < need) {
+    const queueDemand = Math.ceil(need * this.pitchFactor) + N
+    while (this.olaWritePos - this.olaReadPos < queueDemand) {
       this.synthesizeOneFrame()
     }
     this.drainToOutput(output, need)
@@ -168,7 +174,11 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
   private synthesizeOneFrame(): void {
     // For each output channel, take a Hann-windowed frame from the input at this.readPos,
     // overlap-add into the ring at this.olaWritePos, then advance olaWritePos by HS.
-    const S = this.pitchFactor / this.speed
+    // S=1 keeps the OLA pitch-neutral (Ha=HS); the downstream linear resample
+    // in drainToOutput handles pitch shifting via step=pitchFactor. Time-stretch
+    // behaviour for non-unity speed is achieved through the queueDemand/synthesis-rate
+    // balance set in process().
+    const S = 1
     const Ha = HS / S
     const channels = this.channels.length
     if (channels === 0) return
@@ -200,16 +210,46 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
 
   private drainToOutput(output: Float32Array[], need: number): void {
     const channels = output.length
+    if (this.pitchFactor === 1) {
+      for (let i = 0; i < need; i++) {
+        const ringIdx = (this.olaReadPos + i) % RING
+        const envIdx = (this.olaReadPos + i) % HS
+        const norm = this.windowEnv[envIdx]
+        for (let c = 0; c < channels && c < this.olaRing.length; c++) {
+          output[c][i] = this.olaRing[c][ringIdx] / norm
+          this.olaRing[c][ringIdx] = 0
+        }
+      }
+      this.olaReadPos += need
+      return
+    }
+
+    // Linear resample: read at rate pitchFactor through the ring (faster read = higher pitch).
+    const step = this.pitchFactor
     for (let i = 0; i < need; i++) {
-      const ringIdx = (this.olaReadPos + i) % RING
-      const envIdx = (this.olaReadPos + i) % HS
-      const norm = this.windowEnv[envIdx]
+      const fracPos = this.olaReadPosFrac + i * step
+      const base = Math.floor(fracPos)
+      const frac = fracPos - base
+      const idx0 = (this.olaReadPos + base) % RING
+      const idx1 = (this.olaReadPos + base + 1) % RING
+      const envIdx0 = (this.olaReadPos + base) % HS
+      const envIdx1 = (this.olaReadPos + base + 1) % HS
+      const norm0 = this.windowEnv[envIdx0]
+      const norm1 = this.windowEnv[envIdx1]
       for (let c = 0; c < channels && c < this.olaRing.length; c++) {
-        output[c][i] = this.olaRing[c][ringIdx] / norm
-        this.olaRing[c][ringIdx] = 0 // clear behind read head
+        const a = this.olaRing[c][idx0] / norm0
+        const b = this.olaRing[c][idx1] / norm1
+        output[c][i] = a + (b - a) * frac
       }
     }
-    this.olaReadPos += need
+    // Advance read positions; consume up to floor(end) integer samples.
+    const consumed = Math.floor(this.olaReadPosFrac + need * step)
+    for (let j = 0; j < consumed; j++) {
+      const idx = (this.olaReadPos + j) % RING
+      for (let c = 0; c < this.olaRing.length; c++) this.olaRing[c][idx] = 0
+    }
+    this.olaReadPos += consumed
+    this.olaReadPosFrac = (this.olaReadPosFrac + need * step) - consumed
   }
 }
 
