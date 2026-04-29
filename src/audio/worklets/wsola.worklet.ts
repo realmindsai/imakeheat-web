@@ -1,0 +1,136 @@
+// ABOUTME: WSOLA player worklet — owns the source buffer; emits at chosen speed and pitch.
+// ABOUTME: Standard WSOLA stretch composed with linear resample for pitch; neutral fast-path bypass.
+
+import './processor-shim'
+
+interface FxParams {
+  speed: number
+  pitchSemitones: number
+}
+
+interface TrimSec {
+  startSec: number
+  endSec: number
+}
+
+type LoadMsg = { type: 'load'; channels: Float32Array[]; sampleRate: number }
+type PlayMsg = { type: 'play'; offsetSec: number; trim: TrimSec; fx: FxParams }
+type PauseMsg = { type: 'pause' }
+type SeekMsg = { type: 'seek'; sourceTimeSec: number }
+type SetTrimMsg = { type: 'setTrim'; trim: TrimSec }
+type SetFxMsg = { type: 'setFx'; fx: FxParams }
+type UnloadMsg = { type: 'unload' }
+type InMsg = LoadMsg | PlayMsg | PauseMsg | SeekMsg | SetTrimMsg | SetFxMsg | UnloadMsg
+
+export class WSOLAProcessor extends AudioWorkletProcessor {
+  private channels: Float32Array[] = []
+  private srcSampleRate = 48000
+  private trimStart = 0           // input samples
+  private trimEnd = 0             // input samples
+  private readPos = 0             // input samples (fractional allowed)
+  private speed = 1
+  private pitchFactor = 1
+  private state: 'idle' | 'playing' | 'paused' = 'idle'
+
+  constructor() {
+    super()
+    ;(this as any).port.onmessage = (ev: MessageEvent) => this.onMessage(ev.data as InMsg)
+  }
+
+  private onMessage(msg: InMsg): void {
+    switch (msg.type) {
+      case 'load': {
+        this.channels = msg.channels
+        this.srcSampleRate = msg.sampleRate
+        this.trimStart = 0
+        this.trimEnd = msg.channels[0]?.length ?? 0
+        this.readPos = 0
+        this.state = 'idle'
+        return
+      }
+      case 'play': {
+        this.trimStart = Math.round(msg.trim.startSec * this.srcSampleRate)
+        this.trimEnd = Math.round(msg.trim.endSec * this.srcSampleRate)
+        this.readPos = Math.round(msg.offsetSec * this.srcSampleRate)
+        this.applyFx(msg.fx)
+        this.state = 'playing'
+        return
+      }
+      case 'pause': {
+        this.state = 'paused'
+        return
+      }
+      case 'seek': {
+        this.readPos = Math.round(msg.sourceTimeSec * this.srcSampleRate)
+        return
+      }
+      case 'setTrim': {
+        this.trimStart = Math.round(msg.trim.startSec * this.srcSampleRate)
+        this.trimEnd = Math.round(msg.trim.endSec * this.srcSampleRate)
+        if (this.readPos < this.trimStart || this.readPos >= this.trimEnd) {
+          this.readPos = this.trimStart
+        }
+        return
+      }
+      case 'setFx': {
+        this.applyFx(msg.fx)
+        return
+      }
+      case 'unload': {
+        this.channels = []
+        this.state = 'idle'
+        return
+      }
+    }
+  }
+
+  private applyFx(fx: FxParams): void {
+    this.speed = fx.speed
+    this.pitchFactor = Math.pow(2, fx.pitchSemitones / 12)
+  }
+
+  private isNeutral(): boolean {
+    return this.speed === 1 && this.pitchFactor === 1
+  }
+
+  process(
+    _inputs: Float32Array[][],
+    outputs: Float32Array[][],
+    _parameters: Record<string, Float32Array>,
+  ): boolean {
+    const output = outputs[0]
+    if (!output || output.length === 0) return true
+
+    if (this.state !== 'playing' || this.channels.length === 0) {
+      // emit silence
+      for (let c = 0; c < output.length; c++) output[c]?.fill(0)
+      return true
+    }
+
+    if (this.isNeutral()) {
+      this.processNeutral(output)
+      return true
+    }
+
+    // Non-neutral: silence for now — built up in subsequent tasks.
+    for (let c = 0; c < output.length; c++) output[c]?.fill(0)
+    return true
+  }
+
+  private processNeutral(output: Float32Array[]): void {
+    const N = output[0].length
+    const span = Math.max(1, this.trimEnd - this.trimStart)
+    for (let i = 0; i < N; i++) {
+      // wrap into [trimStart, trimEnd)
+      let p = this.readPos
+      if (p >= this.trimEnd) p = this.trimStart + ((p - this.trimStart) % span)
+      const idx = Math.floor(p)
+      for (let c = 0; c < output.length && c < this.channels.length; c++) {
+        output[c][i] = this.channels[c][idx] ?? 0
+      }
+      this.readPos = p + 1
+    }
+  }
+}
+
+registerProcessor('wsola', WSOLAProcessor)
