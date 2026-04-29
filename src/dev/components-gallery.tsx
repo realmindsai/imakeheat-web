@@ -39,6 +39,12 @@ export function Gallery() {
           <Slider value={0.375} neutralCenter />
           <Range left="−12" right="+12" />
         </Param>
+        <Param label="speed" sub="multiplier" value="1.25x">
+          <input type="range" min="0" max="1" step="0.001" defaultValue="0.65" readOnly
+            className="absolute inset-0 z-10 h-[22px] cursor-pointer opacity-0" />
+          <Slider value={0.65} neutralCenter />
+          <Range left="0.5×" right="2.0×" centerHint="1.0×" />
+        </Param>
         <Param label="filter" sub="lo-pass / hi-pass" value="LP 38%">
           <Slider value={0.31} neutralCenter />
           <Range left="LP" right="HP" centerHint="neutral" />
