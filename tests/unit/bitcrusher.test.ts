@@ -71,4 +71,67 @@ describe('BitCrusherProcessor', () => {
     expect(maxOut).toBeCloseTo(127 / 128, 4)
     expect(minOut).toBeCloseTo(-1, 4)
   })
+
+  it('at bits=12, a small-signal sine is pushed louder by the SP-vibe drive', () => {
+    // A small signal (-6 dBFS sine) sits well inside the soft-clip linear range.
+    // With +2 dB drive applied PRE-quantize, the RMS of the output should be
+    // measurably above the input RMS — proving the saturator runs on 12-bit
+    // and not on other bit depths.
+    const n = 8192
+    const sr = 48000
+    const f = 1000
+    const amp = 0.5 // -6 dBFS
+    const sig = new Float32Array(n)
+    for (let i = 0; i < n; i++) sig[i] = amp * Math.sin((2 * Math.PI * f * i) / sr)
+    const inRms = Math.sqrt(sig.reduce((s, v) => s + v * v, 0) / n)
+
+    const proc12 = new BitCrusherProcessor()
+    postToProcessor(proc12, { bits: 12 })
+    const out12 = runProcessor(proc12, [sig])
+    const out12Rms = Math.sqrt(out12[0].reduce((s, v) => s + v * v, 0) / n)
+
+    // +2 dB linear gain ≈ ×1.259, but tanh compresses even moderate signals,
+    // so the realized RMS gain is below the linear ceiling. Empirically ≈ ×1.149.
+    // Lower bound proves the saturator is engaged; upper bound proves it's tanh
+    // (not just linear gain) and that quantization didn't blow up.
+    expect(out12Rms / inRms).toBeGreaterThan(1.10)
+    expect(out12Rms / inRms).toBeLessThan(1.20)
+  })
+
+  it('at bits=8, the same small-signal sine is NOT pushed louder (saturator stays off)', () => {
+    const n = 8192
+    const sr = 48000
+    const f = 1000
+    const amp = 0.5
+    const sig = new Float32Array(n)
+    for (let i = 0; i < n; i++) sig[i] = amp * Math.sin((2 * Math.PI * f * i) / sr)
+    const inRms = Math.sqrt(sig.reduce((s, v) => s + v * v, 0) / n)
+
+    const proc8 = new BitCrusherProcessor()
+    postToProcessor(proc8, { bits: 8 })
+    const out8 = runProcessor(proc8, [sig])
+    const out8Rms = Math.sqrt(out8[0].reduce((s, v) => s + v * v, 0) / n)
+
+    // No saturator → ratio should be ~1 within quantization noise.
+    expect(Math.abs(out8Rms / inRms - 1)).toBeLessThan(0.02)
+  })
+
+  it('at bits=12, hot input is soft-clipped (peaks below 1.0 with no rail-pinning)', () => {
+    // A +6 dBFS sine into tanh(1.26 * x) saturates well below ±1.
+    // Hard clip would pin to the 12-bit lattice edges (±~0.9995). Soft clip
+    // peaks should sit clearly inside that.
+    const n = 4096
+    const sr = 48000
+    const f = 1000
+    const sig = new Float32Array(n)
+    for (let i = 0; i < n; i++) sig[i] = 2 * Math.sin((2 * Math.PI * f * i) / sr)
+
+    const proc = new BitCrusherProcessor()
+    postToProcessor(proc, { bits: 12 })
+    const out = runProcessor(proc, [sig])
+    const peak = Math.max(...Array.from(out[0]).map((v) => Math.abs(v)))
+    // tanh(1.26 * 2) = tanh(2.52) ≈ 0.987 — soft-clipped well inside the 12-bit rails.
+    expect(peak).toBeLessThan(0.99)
+    expect(peak).toBeGreaterThan(0.95)
+  })
 })
