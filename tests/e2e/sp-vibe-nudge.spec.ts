@@ -18,9 +18,11 @@ async function loadFixtureAndOpenEffects(page: import('@playwright/test').Page) 
 test('first tap on 12 nudges sample-rate display toward 24 kHz', async ({ page }) => {
   await loadFixtureAndOpenEffects(page)
 
-  // Sample-rate panel value initially shows the source rate (48000 Hz — fixture is 44100 Hz
-  // but decoded into the engine's 48 kHz AudioContext).
-  await expect(page.getByText('48000 Hz')).toBeVisible()
+  // The initial SR display reads whatever the engine's AudioContext sample rate is —
+  // 48000 in most desktop browsers, 44100 in some CI Chromium configurations.
+  // We don't assert on the specific initial value; the contract under test is the
+  // post-tap state.
+  await expect(page.getByText('24000 Hz')).not.toBeVisible()
 
   // Tap the "12" button.
   await page.getByRole('button', { name: '12', exact: true }).click()
