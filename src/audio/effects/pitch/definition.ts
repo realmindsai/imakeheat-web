@@ -1,13 +1,17 @@
-// ABOUTME: Pitch effect definition — semitone shift + speed stub.
-// ABOUTME: Real build()/Panel arrive in Task 1.4-1.8; registry contract only here.
+// ABOUTME: Pitch EffectDefinition — control-only slot; build() returns a passthrough GainNode.
+// ABOUTME: WSOLA upstream of the chain owns the actual pitch/speed DSP (engine routes apply()).
 
 import { register } from '../_internal'
+import type { EffectDefinition } from '../types'
+import { buildPitchPassthrough } from '../pitch-control'
+import { PitchPanel } from './panel'
 
-register({
+const def: EffectDefinition<'pitch'> = {
   kind: 'pitch',
   displayName: 'Pitch',
   defaultParams: { semitones: 0, speed: 1 },
   isNeutral: (p) => p.semitones === 0 && p.speed === 1,
-  build: () => { throw new Error('pitch.build not yet implemented (Task 1.4-1.8)') },
-  Panel: () => null as never,
-})
+  build: (ctx) => buildPitchPassthrough(ctx),
+  Panel: PitchPanel,
+}
+register(def)
