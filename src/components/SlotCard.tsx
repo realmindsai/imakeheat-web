@@ -39,7 +39,7 @@ export function SlotCard({
       style={style}
       role="group"
       aria-label={`${title}, position ${position} of ${total}`}
-      className="mb-2 rounded-md border border-rmai-border bg-white"
+      className={`mb-2 rounded-md border border-rmai-border bg-white transition-opacity ${enabled ? '' : 'opacity-40'}`}
     >
       <div className="flex items-center gap-2 px-3 py-2">
         <button
@@ -56,9 +56,10 @@ export function SlotCard({
           onClick={onToggleEnabled}
           aria-label={`${enabled ? 'Disable' : 'Enable'} ${title}`}
           aria-pressed={enabled}
-          className={enabled ? 'text-rmai-fg1' : 'text-rmai-mut'}
+          title={enabled ? 'Bypass effect' : 'Enable effect'}
+          className={`rounded px-1 text-[11px] font-mono ${enabled ? 'bg-rmai-fg1 text-white' : 'border border-rmai-border text-rmai-mut'}`}
         >
-          ●
+          {enabled ? 'on' : 'off'}
         </button>
         <button
           onClick={() => setExpanded(!expanded)}
@@ -72,7 +73,7 @@ export function SlotCard({
           ×
         </button>
       </div>
-      {expanded ? <div className="px-3 pb-3">{children}</div> : null}
+      {expanded ? <div className="relative px-3 pb-3">{children}</div> : null}
     </div>
   )
 }
