@@ -25,6 +25,8 @@ function speedFromChain(chain: Chain): number {
   return (p.params as { semitones: number; speed: number }).speed ?? 1
 }
 
+const TAIL_PADDING_SEC = 4
+
 export async function renderOffline(
   buffer: AudioBuffer,
   trim: TrimPoints,
@@ -33,8 +35,17 @@ export async function renderOffline(
   const sourceDur = trim.endSec - trim.startSec
   const speed = speedFromChain(chain)
   const baseLen = sourceDur / speed
-  // Tail padding is added in Chunk 5 Task 5.1.
-  const totalSamples = Math.max(1, Math.ceil(baseLen * buffer.sampleRate))
+  // Tail padding: when echo or reverb is active in the chain, append silence
+  // to the OfflineAudioContext so the wet tail is captured rather than
+  // truncated at audio EOF. Worklets keep producing output as zero-input runs.
+  const needsTail = chain.some((s) => {
+    if (!s.enabled || (s.kind !== 'echo' && s.kind !== 'reverb')) return false
+    const def = registry.get(s.kind)
+    if (!def) return false
+    return !def.isNeutral(s.params as never)
+  })
+  const totalLen = baseLen + (needsTail ? TAIL_PADDING_SEC : 0)
+  const totalSamples = Math.max(1, Math.ceil(totalLen * buffer.sampleRate))
   const ctx = new OfflineAudioContext({
     numberOfChannels: buffer.numberOfChannels,
     length: totalSamples,
