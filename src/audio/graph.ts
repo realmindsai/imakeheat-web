@@ -8,13 +8,14 @@ import { registry } from './effects/registry'
 import bitcrusherUrl from './worklets/bitcrusher.worklet.ts?worker&url'
 import srholdUrl from './worklets/srhold.worklet.ts?worker&url'
 import wsolaUrl from './worklets/wsola.worklet.ts?worker&url'
-// echo + reverb worklet URLs added in Chunk 4 — leave as TODO for now.
+import echoUrl from './worklets/echo.worklet.ts?worker&url'
+// reverb worklet URL added in Chunk 4 Task 4.2 — leave as TODO for now.
 
 export async function loadWorklets(ctx: BaseAudioContext): Promise<void> {
   await ctx.audioWorklet.addModule(bitcrusherUrl)
   await ctx.audioWorklet.addModule(srholdUrl)
   await ctx.audioWorklet.addModule(wsolaUrl)
-  // TODO(Chunk 4): await ctx.audioWorklet.addModule(echoUrl)
+  await ctx.audioWorklet.addModule(echoUrl)
   // TODO(Chunk 4): await ctx.audioWorklet.addModule(reverbUrl)
 }
 
