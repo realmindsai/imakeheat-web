@@ -212,24 +212,40 @@ export interface EffectDefinition<K extends EffectKind = EffectKind> {
 }
 ```
 
-- [ ] **Step 4: Write `src/audio/effects/registry.ts` (empty for now)**
+- [ ] **Step 4a: Write `src/audio/effects/_internal.ts` (cycle-break)**
+
+ESM hoists imports, so if `registry.ts` exports `register` *and* side-effect-imports the definitions (which themselves import `register`), the definitions execute before `register` is bound and crash with `register is not a function`. Fix: put the storage and `register` function in a sibling module that has no transitive imports back into `registry.ts`.
 
 ```ts
-// ABOUTME: Registry — lookup table from EffectKind to its EffectDefinition.
-// ABOUTME: Each definition module imports here on load and self-registers via `register()`.
+// ABOUTME: Internal registry storage shared by `registry.ts` and definition modules.
+// ABOUTME: Lives in its own module so definitions can import `register` without
+// ABOUTME: pulling on the cycle (registry.ts side-effect-imports the definitions).
 
 import type { EffectDefinition, EffectKind } from './types'
 
-const _registry = new Map<EffectKind, EffectDefinition>()
+export const _registry = new Map<EffectKind, EffectDefinition>()
 
 export function register<K extends EffectKind>(def: EffectDefinition<K>): void {
   _registry.set(def.kind, def as unknown as EffectDefinition)
 }
+```
+
+- [ ] **Step 4b: Write `src/audio/effects/registry.ts`**
+
+```ts
+// ABOUTME: Registry — public lookup table from EffectKind to its EffectDefinition.
+// ABOUTME: Importing this module triggers every definition's side-effect registration.
+
+import type { EffectDefinition, EffectKind } from './types'
+import { _registry } from './_internal'
+
+export { register } from './_internal'
 
 export const registry: ReadonlyMap<EffectKind, EffectDefinition> = _registry
 
-// Side-effect imports populate the registry; the order here is the canonical UI order
-// in the +Add menu.
+// Side-effect imports populate the registry; the order here is the canonical UI
+// order in the +Add menu. Definitions import `register` from `./_internal` (not
+// from this module), so there is no import cycle to race this module's body.
 import './crusher/definition'
 import './srhold/definition'
 import './pitch/definition'
@@ -237,6 +253,8 @@ import './filter/definition'
 import './echo/definition'
 import './reverb/definition'
 ```
+
+**Convention for Tasks 1.4–1.8:** every `definition.ts` imports `register` from `'../_internal'`, not `'../registry'`.
 
 - [ ] **Step 5: Write `src/audio/effects/neutral.ts`**
 
