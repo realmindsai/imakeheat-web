@@ -1,53 +1,123 @@
-// ABOUTME: Temporary minimum EffectsRack — slot panels in chain order, no drag/toggle/Add.
-// ABOUTME: Real pedalboard UI lands in Chunk 3 (dnd-kit, +Add, ×Remove, Reset).
+// ABOUTME: EffectsRack — pedalboard slot list with dnd-kit reorder, +Add, Reset.
+// ABOUTME: Each slot renders inside a SlotCard with title, value label, toggle, and remove.
 
-import { Eyebrow } from '../components/Eyebrow'
-import { registry } from '../audio/effects/registry'
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable'
 import { useSessionStore } from '../store/session'
 import { engine } from '../audio/engine'
-import type { Slot } from '../audio/effects/types'
+import { registry } from '../audio/effects/registry'
+import { SlotCard } from '../components/SlotCard'
+import { AddEffectMenu } from '../components/AddEffectMenu'
+import type { EffectKind, Slot } from '../audio/effects/types'
 
 function valueLabel(slot: Slot): string {
   switch (slot.kind) {
-    case 'crusher': return `${slot.params.bitDepth}-bit`
-    case 'srhold':  return `${slot.params.sampleRateHz} Hz`
-    case 'pitch':   return `${slot.params.semitones >= 0 ? '+' : ''}${slot.params.semitones.toFixed(0)} st  ${slot.params.speed.toFixed(2)}x`
-    case 'filter':  {
+    case 'crusher':
+      return `${slot.params.bitDepth}-bit`
+    case 'srhold':
+      return `${slot.params.sampleRateHz} Hz`
+    case 'pitch':
+      return `${slot.params.semitones >= 0 ? '+' : ''}${slot.params.semitones.toFixed(0)} st  ${slot.params.speed.toFixed(2)}x`
+    case 'filter': {
       const v = slot.params.value
       if (Math.abs(v) < 0.05) return 'neutral'
       return `${v < 0 ? 'LP' : 'HP'} ${Math.round(Math.abs(v) * 100)}%`
     }
-    case 'echo':    return `mix ${slot.params.mix.toFixed(2)}`
-    case 'reverb':  return `mix ${slot.params.mix.toFixed(2)}`
+    case 'echo':
+      return `mix ${slot.params.mix.toFixed(2)}`
+    case 'reverb':
+      return `mix ${slot.params.mix.toFixed(2)}`
   }
 }
 
 export function EffectsRack() {
   const chain = useSessionStore((s) => s.chain)
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  )
+
+  const onDragEnd = (e: DragEndEvent) => {
+    const { active, over } = e
+    if (!over || active.id === over.id) return
+    const newIndex = chain.findIndex((s) => s.id === over.id)
+    useSessionStore.getState().reorderSlot(String(active.id), newIndex)
+    engine.rebuildChain(useSessionStore.getState().chain)
+  }
+
   return (
     <div className="px-[22px] pt-[14px]">
-      <Eyebrow className="mb-[10px] !text-rmai-mut">effects rack</Eyebrow>
-      {chain.map((slot) => {
-        const def = registry.get(slot.kind)
-        if (!def) return null
-        const Panel = def.Panel
-        return (
-          <div key={slot.id} className="mb-3">
-            <div className="flex items-baseline justify-between">
-              <span className="text-sm font-mono text-rmai-mut">{def.displayName}</span>
-              <span className="font-mono text-[12px] text-rmai-fg1">{valueLabel(slot)}</span>
-            </div>
-            <Panel
-              slot={slot as never}
-              onChange={(patch) => {
-                useSessionStore.getState().setSlotParams(slot.id, patch as never)
-                const updated = useSessionStore.getState().chain.find(s => s.id === slot.id)
-                if (updated) engine.updateSlotParams(slot.id, updated.params)
-              }}
-            />
-          </div>
-        )
-      })}
+      <div className="mb-2 flex items-center justify-between">
+        <span className="font-mono text-xs text-rmai-mut">effects rack</span>
+        <button
+          onClick={() => {
+            useSessionStore.getState().resetChain()
+            engine.rebuildChain(useSessionStore.getState().chain)
+          }}
+          className="font-mono text-xs text-rmai-mut"
+        >
+          Reset
+        </button>
+      </div>
+
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+        <SortableContext items={chain.map((s) => s.id)} strategy={verticalListSortingStrategy}>
+          {chain.map((slot, i) => {
+            const def = registry.get(slot.kind)
+            if (!def) return null
+            const Panel = def.Panel
+            const defaultExpanded = slot.kind !== 'echo' && slot.kind !== 'reverb'
+            return (
+              <SlotCard
+                key={slot.id}
+                id={slot.id}
+                title={def.displayName}
+                valueLabel={valueLabel(slot)}
+                position={i + 1}
+                total={chain.length}
+                enabled={slot.enabled}
+                defaultExpanded={defaultExpanded}
+                onToggleEnabled={() => {
+                  useSessionStore.getState().toggleEnabled(slot.id)
+                  engine.rebuildChain(useSessionStore.getState().chain)
+                }}
+                onRemove={() => {
+                  useSessionStore.getState().removeSlot(slot.id)
+                  engine.rebuildChain(useSessionStore.getState().chain)
+                }}
+              >
+                <Panel
+                  slot={slot as never}
+                  onChange={(patch) => {
+                    useSessionStore.getState().setSlotParams(slot.id, patch as never)
+                    const updated = useSessionStore.getState().chain.find((s) => s.id === slot.id)
+                    if (updated) engine.updateSlotParams(slot.id, updated.params)
+                  }}
+                />
+              </SlotCard>
+            )
+          })}
+        </SortableContext>
+      </DndContext>
+
+      <AddEffectMenu
+        onAdd={(kind: EffectKind) => {
+          useSessionStore.getState().addSlot(kind)
+          engine.rebuildChain(useSessionStore.getState().chain)
+        }}
+      />
     </div>
   )
 }
