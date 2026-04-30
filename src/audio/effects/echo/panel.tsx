@@ -18,23 +18,29 @@ export function EchoPanel({ slot, onChange }: Props) {
   const mixNorm = slot.params.mix
   return (
     <>
-      <input type="range" min="50" max="1000" step="10" value={slot.params.timeMs}
-        onChange={(e) => debouncedOnChange({ timeMs: Number(e.target.value) })}
-        className="absolute inset-0 z-10 h-[22px] cursor-pointer opacity-0" />
-      <Slider value={timeNorm} />
-      <Range left="50 ms" right="1000 ms" />
+      <div className="relative">
+        <input type="range" min="50" max="1000" step="10" value={slot.params.timeMs}
+          onChange={(e) => debouncedOnChange({ timeMs: Number(e.target.value) })}
+          className="absolute inset-0 z-10 h-[22px] cursor-pointer opacity-0" />
+        <Slider value={timeNorm} />
+        <Range left="50 ms" right="1000 ms" />
+      </div>
 
-      <input type="range" min="0" max="0.95" step="0.05" value={slot.params.feedback}
-        onChange={(e) => debouncedOnChange({ feedback: Number(e.target.value) })}
-        className="absolute inset-0 z-10 h-[22px] cursor-pointer opacity-0" />
-      <Slider value={fbNorm} />
-      <Range left="0" right="0.95" />
+      <div className="relative mt-2">
+        <input type="range" min="0" max="0.95" step="0.05" value={slot.params.feedback}
+          onChange={(e) => debouncedOnChange({ feedback: Number(e.target.value) })}
+          className="absolute inset-0 z-10 h-[22px] cursor-pointer opacity-0" />
+        <Slider value={fbNorm} />
+        <Range left="0" right="0.95" />
+      </div>
 
-      <input type="range" min="0" max="1" step="0.05" value={slot.params.mix}
-        onChange={(e) => debouncedOnChange({ mix: Number(e.target.value) })}
-        className="absolute inset-0 z-10 h-[22px] cursor-pointer opacity-0" />
-      <Slider value={mixNorm} />
-      <Range left="dry" right="wet" />
+      <div className="relative mt-2">
+        <input type="range" min="0" max="1" step="0.05" value={slot.params.mix}
+          onChange={(e) => debouncedOnChange({ mix: Number(e.target.value) })}
+          className="absolute inset-0 z-10 h-[22px] cursor-pointer opacity-0" />
+        <Slider value={mixNorm} />
+        <Range left="dry" right="wet" />
+      </div>
     </>
   )
 }

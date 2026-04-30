@@ -16,17 +16,21 @@ export function PitchPanel({ slot, onChange }: Props) {
   return (
     <>
       <small className="block text-rmai-mut text-xs">applies before all effects</small>
-      <input type="range" min="-12" max="12" step="1" value={slot.params.semitones}
-        onChange={(e) => onChange({ semitones: Number(e.target.value) })}
-        className="absolute inset-0 z-10 h-[22px] cursor-pointer opacity-0" />
-      <Slider value={pitchNorm} neutralCenter />
-      <Range left="−12" right="+12" />
-      <input type="range" min="0" max="1" step="0.001"
-        value={speedToSlider(slot.params.speed)}
-        onChange={(e) => onChange({ speed: sliderToSpeed(Number(e.target.value)) })}
-        className="absolute inset-0 z-10 h-[22px] cursor-pointer opacity-0" />
-      <Slider value={speedToSlider(slot.params.speed)} neutralCenter />
-      <Range left="0.5×" right="2.0×" centerHint="1.0×" />
+      <div className="relative">
+        <input type="range" min="-12" max="12" step="1" value={slot.params.semitones}
+          onChange={(e) => onChange({ semitones: Number(e.target.value) })}
+          className="absolute inset-0 z-10 h-[22px] cursor-pointer opacity-0" />
+        <Slider value={pitchNorm} neutralCenter />
+        <Range left="−12" right="+12" />
+      </div>
+      <div className="relative mt-2">
+        <input type="range" min="0" max="1" step="0.001"
+          value={speedToSlider(slot.params.speed)}
+          onChange={(e) => onChange({ speed: sliderToSpeed(Number(e.target.value)) })}
+          className="absolute inset-0 z-10 h-[22px] cursor-pointer opacity-0" />
+        <Slider value={speedToSlider(slot.params.speed)} neutralCenter />
+        <Range left="0.5×" right="2.0×" centerHint="1.0×" />
+      </div>
     </>
   )
 }
