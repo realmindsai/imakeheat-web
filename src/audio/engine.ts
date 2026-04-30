@@ -1,27 +1,58 @@
-// ABOUTME: AudioEngine singleton — owns the AudioContext, graph, source node state machine.
-// ABOUTME: Exposes play/pause/seek/trim/effect/record/render API for UI layers.
+// ABOUTME: AudioEngine singleton — owns the AudioContext, chain graph, and player state machine.
+// ABOUTME: Exposes play/pause/seek/trim/rebuildChain/updateSlotParams/record/render API for UI layers.
 
-import { buildPreviewGraph, type PreviewGraph } from './graph'
+import { loadWorklets, renderOffline } from './graph'
 import { startRecording, type ActiveRecording } from './recorder'
+import { registry } from './effects/registry'
+import type { Chain, EffectNode, Slot } from './effects/types'
 import type { EffectParams, TrimPoints } from './types'
+
+import wsolaUrl from './worklets/wsola.worklet.ts?worker&url'
+
+void wsolaUrl // keep side-effect import alive under strict unused-binding lint
+
+const REBUILD_COALESCE_MS = 8
+
+interface LiveSlotEntry {
+  slot: Slot
+  node: EffectNode<unknown>
+}
 
 export class AudioEngine {
   private ctx: AudioContext | null = null
-  private graph: PreviewGraph | null = null
+  private player: AudioWorkletNode | null = null
+  private analyser: AnalyserNode | null = null
+  private master: GainNode | null = null
   private currentBuffer: AudioBuffer | null = null
+
+  private liveNodes: Map<string, LiveSlotEntry> = new Map()
+  private pendingChain: Chain | null = null
+  private rebuildTimer: ReturnType<typeof setTimeout> | null = null
+
   private pausedSourceTimeSec = 0
   private playStartedAt = 0
   private playStartedAtSrcSec = 0
   private isPlaying = false
   private lastTrim: TrimPoints | null = null
-  private lastFx: EffectParams | null = null
+  private lastChain: Chain | null = null
   private lastReportedPosSec = 0
 
   async ensureStarted(): Promise<void> {
     if (this.ctx) return
     this.ctx = new AudioContext({ latencyHint: 'interactive' })
-    this.graph = await buildPreviewGraph(this.ctx)
-    this.graph.player.port.onmessage = (ev) => {
+    await loadWorklets(this.ctx)
+    this.player = new AudioWorkletNode(this.ctx, 'wsola')
+    this.analyser = this.ctx.createAnalyser()
+    this.analyser.fftSize = 1024
+    this.master = this.ctx.createGain()
+    this.master.gain.value = 1
+
+    // Default wiring with no slots: player → analyser → master → destination.
+    this.player.connect(this.analyser)
+    this.analyser.connect(this.master)
+    this.master.connect(this.ctx.destination)
+
+    this.player.port.onmessage = (ev) => {
       const data = ev.data as { type?: string; readPosSec?: number }
       if (data.type === 'position' && typeof data.readPosSec === 'number') {
         this.lastReportedPosSec = data.readPosSec
@@ -38,7 +69,7 @@ export class AudioEngine {
   }
 
   getAnalyser(): AnalyserNode | null {
-    return this.graph?.analyser ?? null
+    return this.analyser
   }
 
   async loadFromBlob(blob: Blob): Promise<AudioBuffer> {
@@ -46,26 +77,37 @@ export class AudioEngine {
     const buf = await blob.arrayBuffer()
     const decoded = await this.ctx!.decodeAudioData(buf)
     this.currentBuffer = decoded
-    this.graph!.loadBuffer(decoded)
+    this.loadBufferIntoPlayer(decoded)
     this.pausedSourceTimeSec = 0
     this.playStartedAtSrcSec = 0
     this.isPlaying = false
     this.lastTrim = null
-    this.lastFx = null
+    this.lastChain = null
     return decoded
   }
 
-  async play(trim: TrimPoints, fx: EffectParams): Promise<void> {
-    if (!this.ctx || !this.graph || !this.currentBuffer) throw new Error('engine not loaded')
+  private loadBufferIntoPlayer(audioBuffer: AudioBuffer): void {
+    if (!this.player) return
+    const channels: Float32Array[] = []
+    const transfer: ArrayBuffer[] = []
+    for (let c = 0; c < audioBuffer.numberOfChannels; c++) {
+      const data = new Float32Array(audioBuffer.length)
+      audioBuffer.copyFromChannel(data, c)
+      channels.push(data)
+      transfer.push(data.buffer)
+    }
+    this.player.port.postMessage(
+      { type: 'load', channels, sampleRate: audioBuffer.sampleRate },
+      transfer,
+    )
+  }
+
+  async play(trim: TrimPoints, chain: Chain): Promise<void> {
+    if (!this.ctx || !this.player || !this.currentBuffer) throw new Error('engine not loaded')
     if (this.isPlaying) return
     this.lastTrim = trim
-    this.lastFx = fx
-    this.graph.applyEffects(fx)
+    this.rebuildChain(chain)
 
-    // Resume from where pause/seek left us, clamped into the current trim window.
-    // First play after load has pausedSourceTimeSec === 0; that clamps up to trim.startSec
-    // when trim.startSec > 0. Write the clamped value back to pausedSourceTimeSec so
-    // getCurrentSourceTimeSec(...) returns the right anchor before any pause has occurred.
     const offsetSec = Math.max(
       trim.startSec,
       Math.min(trim.endSec, this.pausedSourceTimeSec || trim.startSec),
@@ -73,31 +115,31 @@ export class AudioEngine {
     this.pausedSourceTimeSec = offsetSec
     this.playStartedAtSrcSec = offsetSec
 
-    this.graph.player.port.postMessage({
+    this.player.port.postMessage({
       type: 'play',
       offsetSec,
       trim,
-      fx,
+      chain,
     })
     this.playStartedAt = this.ctx.currentTime
     this.isPlaying = true
   }
 
   pause(): void {
-    if (!this.ctx || !this.graph) return
+    if (!this.ctx || !this.player) return
     if (!this.isPlaying) return
     const trim = this.lastTrim ?? { startSec: 0, endSec: this.currentBuffer?.duration ?? 0 }
     this.pausedSourceTimeSec = this.getCurrentSourceTimeSec(trim)
-    this.graph.player.port.postMessage({ type: 'pause' })
+    this.player.port.postMessage({ type: 'pause' })
     this.isPlaying = false
   }
 
   async seek(sourceTimeSec: number): Promise<void> {
-    if (!this.currentBuffer || !this.graph) return
+    if (!this.currentBuffer || !this.player) return
     const trim = this.lastTrim ?? { startSec: 0, endSec: this.currentBuffer.duration }
     const clamped = Math.max(trim.startSec, Math.min(trim.endSec, sourceTimeSec))
     this.pausedSourceTimeSec = clamped
-    this.graph.player.port.postMessage({ type: 'seek', sourceTimeSec: clamped })
+    this.player.port.postMessage({ type: 'seek', sourceTimeSec: clamped })
     if (this.isPlaying && this.ctx) {
       this.playStartedAt = this.ctx.currentTime
       this.playStartedAtSrcSec = clamped
@@ -106,42 +148,151 @@ export class AudioEngine {
 
   async setTrim(trim: TrimPoints): Promise<void> {
     this.lastTrim = trim
-    if (!this.graph) return
+    if (!this.player) return
     if (this.isPlaying && this.ctx) {
       const cur = this.getCurrentSourceTimeSec(trim)
       this.playStartedAt = this.ctx.currentTime
       this.playStartedAtSrcSec = cur
     }
-    this.graph.player.port.postMessage({ type: 'setTrim', trim })
+    this.player.port.postMessage({ type: 'setTrim', trim })
   }
 
-  setEffect(fx: EffectParams): void {
-    if (!this.graph || !this.ctx) return
-    if (this.isPlaying && this.lastTrim && this.lastFx && this.lastFx.speed !== fx.speed) {
+  /**
+   * Replace the live chain. Coalesces bursts within REBUILD_COALESCE_MS into a
+   * single rewire so a sequence of UI changes (drag-reorder, +Add, ×Remove)
+   * doesn't tear down/build up the graph multiple times in one frame.
+   */
+  rebuildChain(chain: Chain): void {
+    this.pendingChain = chain
+    if (this.rebuildTimer != null) return
+    this.rebuildTimer = setTimeout(() => {
+      this.rebuildTimer = null
+      const next = this.pendingChain
+      this.pendingChain = null
+      if (next) this.applyChain(next)
+    }, REBUILD_COALESCE_MS)
+  }
+
+  private applyChain(chain: Chain): void {
+    if (!this.ctx || !this.player || !this.analyser) return
+    const ctx = this.ctx
+
+    // Speed change requires resetting the playback anchor so getCurrentSourceTimeSec
+    // doesn't lurch when speed changes mid-play.
+    const oldSpeed = speedFromChain(this.lastChain)
+    const newSpeed = speedFromChain(chain)
+    if (this.isPlaying && this.lastTrim && oldSpeed !== newSpeed) {
       const cur = this.getCurrentSourceTimeSec(this.lastTrim)
-      this.playStartedAt = this.ctx.currentTime
+      this.playStartedAt = ctx.currentTime
       this.playStartedAtSrcSec = cur
     }
-    this.lastFx = fx
-    this.graph.applyEffects(fx)
-    this.graph.player.port.postMessage({ type: 'setFx', fx })
+
+    this.lastChain = chain
+
+    // Forward chain semantics to the WSOLA player.
+    this.player.port.postMessage({ type: 'setChain', chain })
+
+    // Decide which slots are "active" in the audio graph. Pitch is control-only
+    // (WSOLA owns it), and disabled or neutral slots are skipped.
+    const activeSlots = chain.filter((s) => s.enabled && s.kind !== 'pitch' && !isSlotNeutral(s))
+
+    // Build/keep nodes per slot id; dispose anything missing from the new chain.
+    const nextLive: Map<string, LiveSlotEntry> = new Map()
+    for (const slot of activeSlots) {
+      const existing = this.liveNodes.get(slot.id)
+      if (existing && existing.slot.kind === slot.kind) {
+        // Same kind — keep node, push params.
+        existing.node.apply(slot.params as never)
+        existing.slot = slot
+        nextLive.set(slot.id, existing)
+      } else {
+        const def = registry.get(slot.kind)
+        if (!def) continue
+        const node = def.build(ctx, slot.params as never) as EffectNode<unknown>
+        nextLive.set(slot.id, { slot, node })
+      }
+    }
+    for (const [id, entry] of this.liveNodes) {
+      if (!nextLive.has(id)) {
+        try { entry.node.dispose() } catch { /* ignore */ }
+      }
+    }
+
+    // Rewire: player → [active nodes in chain order] → analyser → master → destination.
+    // We tear down outgoing connections for every node we own, then reconnect.
+    try { this.player.disconnect() } catch { /* ignore */ }
+    for (const entry of nextLive.values()) {
+      try { entry.node.input.disconnect() } catch { /* ignore */ }
+      try { entry.node.output.disconnect() } catch { /* ignore */ }
+    }
+
+    let head: AudioNode = this.player
+    for (const slot of activeSlots) {
+      const entry = nextLive.get(slot.id)
+      if (!entry) continue
+      head.connect(entry.node.input)
+      head = entry.node.output
+    }
+    head.connect(this.analyser)
+
+    this.liveNodes = nextLive
+  }
+
+  /**
+   * Push parameter changes for a single slot without tearing down the graph.
+   * Pitch slot is special-cased: WSOLA owns the DSP.
+   */
+  updateSlotParams(slotId: string, params: unknown): void {
+    if (!this.lastChain) return
+    // Update lastChain in-place so future speed/playhead math sees the new params.
+    this.lastChain = this.lastChain.map((s) =>
+      s.id === slotId ? ({ ...s, params: { ...(s.params as object), ...(params as object) } } as Slot) : s,
+    )
+    const slot = this.lastChain.find((s) => s.id === slotId)
+    if (!slot) return
+
+    if (slot.kind === 'pitch') {
+      // Reset playback anchor on speed change.
+      const p = slot.params as { semitones: number; speed: number }
+      if (this.isPlaying && this.lastTrim && this.ctx) {
+        const cur = this.getCurrentSourceTimeSec(this.lastTrim)
+        this.playStartedAt = this.ctx.currentTime
+        this.playStartedAtSrcSec = cur
+      }
+      this.player?.port.postMessage({ type: 'pitch', params: { semitones: p.semitones, speed: p.speed } })
+      return
+    }
+
+    const entry = this.liveNodes.get(slotId)
+    if (entry) {
+      entry.node.apply(slot.params as never)
+      entry.slot = slot
+      return
+    }
+    // No live node yet (slot was neutral/disabled). Falling back to a full
+    // rebuild ensures a slot toggling out of neutrality wires itself in.
+    this.rebuildChain(this.lastChain)
   }
 
   unload(): void {
-    if (this.graph) this.graph.player.port.postMessage({ type: 'unload' })
+    if (this.player) this.player.port.postMessage({ type: 'unload' })
+    for (const entry of this.liveNodes.values()) {
+      try { entry.node.dispose() } catch { /* ignore */ }
+    }
+    this.liveNodes.clear()
     this.currentBuffer = null
     this.pausedSourceTimeSec = 0
     this.playStartedAtSrcSec = 0
     this.isPlaying = false
     this.lastTrim = null
-    this.lastFx = null
+    this.lastChain = null
   }
 
   getCurrentSourceTimeSec(trim: TrimPoints): number {
     if (!this.ctx) return trim.startSec
     if (!this.isPlaying) return this.pausedSourceTimeSec
     const wall = this.ctx.currentTime - this.playStartedAt
-    const speed = this.lastFx?.speed ?? 1
+    const speed = speedFromChain(this.lastChain)
     const pos = this.playStartedAtSrcSec + wall * speed
     const span = trim.endSec - trim.startSec
     if (span <= 0) return trim.startSec
@@ -153,17 +304,66 @@ export class AudioEngine {
     return startRecording(this.ctx!)
   }
 
-  async render(buffer: AudioBuffer, trim: TrimPoints, fx: EffectParams): Promise<AudioBuffer> {
+  async render(buffer: AudioBuffer, trim: TrimPoints, chain: Chain): Promise<AudioBuffer> {
     const sr = buffer.sampleRate
-    const length = Math.max(1, Math.ceil(((trim.endSec - trim.startSec) / fx.speed) * sr))
+    const speed = speedFromChain(chain)
+    const length = Math.max(1, Math.ceil(((trim.endSec - trim.startSec) / speed) * sr))
     const offline = new OfflineAudioContext({
       numberOfChannels: buffer.numberOfChannels,
       length,
       sampleRate: sr,
     })
-    const { renderOffline } = await import('./graph')
+    // TRANSITIONAL: Task 2.5 will rewrite renderOffline to take a Chain directly.
+    // For now, derive an EffectParams snapshot from the chain so the legacy
+    // renderOffline still produces correct audio for live exports.
+    const fx = chainToEffectParams(chain, sr)
     return renderOffline(offline, buffer, trim, fx)
   }
 }
 
 export const engine = new AudioEngine()
+
+function speedFromChain(chain: Chain | null): number {
+  if (!chain) return 1
+  const p = chain.find((s) => s.kind === 'pitch')
+  if (!p || !p.enabled) return 1
+  return (p.params as { speed: number }).speed ?? 1
+}
+
+function isSlotNeutral(slot: Slot): boolean {
+  const def = registry.get(slot.kind)
+  if (!def) return true
+  return def.isNeutral(slot.params as never)
+}
+
+/**
+ * TRANSITIONAL: Task 2.5 deletes this. Bridges the new Chain back to the legacy
+ * EffectParams shape so the unmigrated renderOffline path keeps working.
+ */
+function chainToEffectParams(chain: Chain, sourceRate: number): EffectParams {
+  // Default to neutral so a missing/disabled slot has no effect on the render.
+  const fx: EffectParams = {
+    bitDepth: 16,
+    sampleRateHz: sourceRate,
+    pitchSemitones: 0,
+    speed: 1,
+    filterValue: 0,
+  }
+  for (const s of chain) {
+    if (!s.enabled) continue
+    if (isSlotNeutral(s)) continue
+    switch (s.kind) {
+      case 'crusher': fx.bitDepth = (s.params as { bitDepth: 2 | 4 | 8 | 12 | 16 }).bitDepth; break
+      case 'srhold':  fx.sampleRateHz = (s.params as { sampleRateHz: number }).sampleRateHz; break
+      case 'pitch': {
+        const p = s.params as { semitones: number; speed: number }
+        fx.pitchSemitones = p.semitones
+        fx.speed = p.speed
+        break
+      }
+      case 'filter': fx.filterValue = (s.params as { value: number }).value; break
+      // echo/reverb don't map onto the legacy EffectParams shape — Task 2.5 fixes this.
+    }
+  }
+  return fx
+}

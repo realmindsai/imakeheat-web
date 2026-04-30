@@ -9,19 +9,54 @@ interface FxParams {
   pitchSemitones: number
 }
 
+interface PitchParams {
+  semitones: number
+  speed: number
+}
+
 interface TrimSec {
   startSec: number
   endSec: number
 }
 
+// Minimal slot/chain shapes mirrored here so the worklet doesn't depend on
+// the React-side types module (worklets compile in isolation).
+interface ChainSlot {
+  id: string
+  kind: string
+  enabled: boolean
+  params: Record<string, unknown>
+}
+type Chain = ChainSlot[]
+
 type LoadMsg = { type: 'load'; channels: Float32Array[]; sampleRate: number }
-type PlayMsg = { type: 'play'; offsetSec: number; trim: TrimSec; fx: FxParams }
+// Two play shapes — Chunk 2 transitional:
+//   { fx } is posted by graph.ts:renderOffline (Task 2.5 will migrate it).
+//   { chain } is posted by engine.play with the new Chain API.
+type PlayMsg =
+  | { type: 'play'; offsetSec: number; trim: TrimSec; chain: Chain }
+  | { type: 'play'; offsetSec: number; trim: TrimSec; fx: FxParams }
 type PauseMsg = { type: 'pause' }
 type SeekMsg = { type: 'seek'; sourceTimeSec: number }
 type SetTrimMsg = { type: 'setTrim'; trim: TrimSec }
+type SetChainMsg = { type: 'setChain'; chain: Chain }
+type PitchMsg = { type: 'pitch'; params: PitchParams }
+// Legacy — kept so `tests/integration/runner.ts` (Task 2.5 owns) keeps working.
 type SetFxMsg = { type: 'setFx'; fx: FxParams }
 type UnloadMsg = { type: 'unload' }
-type InMsg = LoadMsg | PlayMsg | PauseMsg | SeekMsg | SetTrimMsg | SetFxMsg | UnloadMsg
+type InMsg =
+  | LoadMsg | PlayMsg | PauseMsg | SeekMsg | SetTrimMsg
+  | SetChainMsg | PitchMsg | SetFxMsg | UnloadMsg
+
+function fxFromChain(chain: Chain): FxParams {
+  const p = chain.find((s) => s.kind === 'pitch' && s.enabled)
+  if (!p) return { speed: 1, pitchSemitones: 0 }
+  const params = p.params as { semitones?: number; speed?: number }
+  return {
+    speed: typeof params.speed === 'number' ? params.speed : 1,
+    pitchSemitones: typeof params.semitones === 'number' ? params.semitones : 0,
+  }
+}
 
 export class WSOLAProcessor extends AudioWorkletProcessor {
   private channels: Float32Array[] = []
@@ -64,10 +99,11 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
         this.trimStart = Math.round(msg.trim.startSec * this.srcSampleRate)
         this.trimEnd = Math.round(msg.trim.endSec * this.srcSampleRate)
         this.readPos = Math.round(msg.offsetSec * this.srcSampleRate)
-        this.applyFx(msg.fx)
+        const fx: FxParams = 'chain' in msg ? fxFromChain(msg.chain) : msg.fx
+        this.applyFx(fx)
         this.state = 'playing'
         this.blocksSinceReport = 0
-        this.initSoundTouch(msg.fx)
+        this.initSoundTouch(fx)
         return
       }
       case 'pause': {
@@ -93,7 +129,30 @@ export class WSOLAProcessor extends AudioWorkletProcessor {
         }
         return
       }
+      case 'setChain': {
+        const fx = fxFromChain(msg.chain)
+        this.applyFx(fx)
+        if (this.soundtouch) {
+          this.soundtouch.tempo = fx.speed
+          this.soundtouch.pitchSemitones = fx.pitchSemitones
+        }
+        return
+      }
+      case 'pitch': {
+        const fx: FxParams = {
+          speed: msg.params.speed,
+          pitchSemitones: msg.params.semitones,
+        }
+        this.applyFx(fx)
+        if (this.soundtouch) {
+          this.soundtouch.tempo = fx.speed
+          this.soundtouch.pitchSemitones = fx.pitchSemitones
+        }
+        return
+      }
       case 'setFx': {
+        // Legacy — preserved so the unmigrated renderOffline integration runner
+        // still works. Task 2.5 deletes this branch.
         this.applyFx(msg.fx)
         if (this.soundtouch) {
           this.soundtouch.tempo = msg.fx.speed
