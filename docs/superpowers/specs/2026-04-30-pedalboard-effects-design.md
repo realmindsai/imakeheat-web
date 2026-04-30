@@ -59,6 +59,20 @@ Two design rules:
 
 1. **`enabled` is separate from "neutral".** A slot can be in the chain but explicitly toggled off (eyeball icon, like in DAWs) — distinct from "in the chain but its params happen to land on neutral values." Bypass logic: `!enabled || isNeutral(slot)`. Each effect kind owns its own `isNeutral()` (echo: `mix < 0.05`; bitcrusher: `bitDepth === 16`; etc.).
 2. **Pitch and speed share one slot.** They share the WSOLA worklet under the hood; splitting would mean two WSOLA instances per chain.
+3. **Pitch is a control-only slot.** WSOLA is the `player` node — it sits *upstream* of the chain by construction (it generates the audio that feeds the chain). The pitch slot's `build()` therefore returns a **passthrough `GainNode`** as both input and output; `apply({semitones, speed})` posts a message to the WSOLA player. The slot's *position* in the rack is decorative for pitch only — it always applies pre-chain. The pitch panel surfaces this with a small annotation: *"applies before all effects"*. This is a documented v2 limitation; future work could relocate WSOLA mid-chain.
+
+**Per-kind `isNeutral` rules:**
+
+| Kind | Neutral when |
+|---|---|
+| `crusher` | `bitDepth === 16` |
+| `srhold` | `sampleRateHz >= source.sampleRateHz` (no downsample) |
+| `pitch` | `semitones === 0 && speed === 1` |
+| `filter` | `Math.abs(value) < 0.01` (BiquadFilter is transparent at 0; small epsilon for slider noise) |
+| `echo` | `mix < 0.05` |
+| `reverb` | `mix < 0.05` |
+
+Bypass-by-omission relies on these — every legacy effect is provably transparent (or a no-op) at its neutral params, so dropping its node from the wire path produces the same output as keeping it.
 
 **Default chain on fresh source** (the v1 chain at neutral values):
 
@@ -92,14 +106,14 @@ interface EffectDefinition<P> {
   displayName: string                                   // "Echo", "Reverb"
   defaultParams: P
   isNeutral(p: P): boolean                              // for bypass
-  build(ctx: BaseAudioContext, params: P): EffectNode   // sub-graph for this slot
+  build(ctx: BaseAudioContext, params: P): EffectNode<P>// sub-graph for this slot
   Panel: React.FC<{ slot: Slot; onChange(patch: Partial<P>): void }>
 }
 
-interface EffectNode {
+interface EffectNode<P> {
   input: AudioNode
   output: AudioNode
-  apply(params: unknown): void                          // live param push, no rebuild
+  apply(params: P): void                                // live param push, no rebuild
   dispose(): void
 }
 ```
@@ -116,41 +130,71 @@ The Echo and Reverb worklets are direct ports of `EchoEffect.kt` and `ReverbEffe
 ```ts
 // src/audio/engine.ts
 class AudioEngine {
-  private currentChain: EffectNode[] = []
+  private liveNodes: Map<string, EffectNode<unknown>> = new Map()  // slotId → node, in chain order
   private master: GainNode
+  private pendingChain: Chain | null = null                         // latest queued rebuild
+  private rebuildTimer: ReturnType<typeof setTimeout> | null = null
+  private pitchSlotId: string | null = null                         // cached id of the (single) pitch slot
 
+  // Called on add/remove/reorder/enabled-toggle. Apply-on-release; coalesced.
   rebuildChain(chain: Chain): void {
-    // 1. Ramp master to 0 over ~10ms to mask the disconnect click.
-    this.master.gain.setTargetAtTime(0, this.ctx.currentTime, 0.003)
+    this.pendingChain = chain
+    if (this.rebuildTimer) return                                   // already scheduled
 
-    // 2. After ramp completes (~15ms), reroute synchronously.
-    setTimeout(() => {
-      this.currentChain.forEach(n => n.dispose())
-      this.currentChain = chain
-        .filter(s => s.enabled && !isNeutral(s))
-        .map(s => registry.get(s.kind).build(this.ctx, s.params))
+    // 1. Ramp master to 0 over ~30ms to mask the disconnect click.
+    this.master.gain.cancelScheduledValues(this.ctx.currentTime)
+    this.master.gain.setTargetAtTime(0, this.ctx.currentTime, 0.010)
 
+    // 2. After ramp completes, apply the latest pending chain. Subsequent
+    //    rebuildChain() calls during the window just overwrite pendingChain.
+    this.rebuildTimer = setTimeout(() => {
+      this.rebuildTimer = null
+      const target = this.pendingChain!
+      this.pendingChain = null
+
+      // Dispose all current nodes — full rebuild, no reuse (see rule 3 below).
+      for (const node of this.liveNodes.values()) node.dispose()
+      this.liveNodes.clear()
+
+      // Build only the slots that are enabled AND non-neutral. Pitch slot's
+      // build() returns a passthrough GainNode (WSOLA is the upstream player).
+      for (const s of target) {
+        const def = registry.get(s.kind)
+        if (s.enabled && !def.isNeutral(s.params as never)) {
+          this.liveNodes.set(s.id, def.build(this.ctx, s.params as never))
+        }
+      }
+
+      // Wire: player → liveNodes (in chain order) → master.
       this.player.disconnect()
       let prev: AudioNode = this.player
-      for (const node of this.currentChain) { prev.connect(node.input); prev = node.output }
+      for (const s of target) {
+        const node = this.liveNodes.get(s.id)
+        if (node) { prev.connect(node.input); prev = node.output }
+      }
       prev.connect(this.master)
 
-      this.master.gain.setTargetAtTime(1, this.ctx.currentTime, 0.003)
-    }, 15)
+      this.master.gain.setTargetAtTime(1, this.ctx.currentTime, 0.010)
+    }, 35)                                                           // ramp 30ms + 5ms slack
   }
 
+  // Called on every slider change. Cheap: no rebuild.
   updateSlotParams(slotId: string, params: unknown): void {
-    const idx = this.chainSlotIds.indexOf(slotId)
-    if (idx >= 0) this.currentChain[idx].apply(params)
+    const node = this.liveNodes.get(slotId)
+    if (node) node.apply(params)
+    // Pitch is special: liveNodes only holds it if non-neutral; pitch's apply()
+    // posts to the WSOLA player so updates flow even when the slot has no node.
+    if (slotId === this.pitchSlotId) this.player.port.postMessage({ type: 'pitch', params })
   }
 }
 ```
 
-Three rules:
+Four rules:
 
 - **Apply-on-release.** Drag-and-drop reorder calls `rebuildChain` *once*, on drag end — not on every `pointermove`. One clean transition per gesture.
-- **Bypass-by-omission.** Slots with `!enabled` or `isNeutral(params)` are not connected into the live graph. Reverb at mix=0 costs zero CPU.
+- **Bypass-by-omission.** Slots with `!enabled` or `isNeutral(params)` are not built into `liveNodes` at all. Reverb at mix=0 costs zero CPU.
 - **Full rebuild, no node reuse.** Every chain change disposes and rebuilds. Echo/reverb tail buffers reset; that's the accepted tradeoff for simpler lifecycle code.
+- **Rebuild calls are coalesced.** If a second `rebuildChain(b)` arrives during the 35ms window of the first, only `b` is applied — `pendingChain` is overwritten and the timer is not re-armed. This avoids racing setTimeouts and audible double-clicks on rapid reorders.
 
 The `analyser` node sits at the chain tail (before `master`), so the waveform display always reflects the fully-processed signal regardless of chain length.
 
@@ -168,9 +212,10 @@ export async function renderOffline(
   const sourceDur = trim.endSec - trim.startSec
   const speed = getSpeedFromChain(chain) ?? 1
   const baseLen = sourceDur / speed
-  const needsTail = chain.some(s =>
-    s.enabled && (s.kind === 'echo' || s.kind === 'reverb') && !isNeutral(s)
-  )
+  const needsTail = chain.some(s => {
+    if (!s.enabled || (s.kind !== 'echo' && s.kind !== 'reverb')) return false
+    return !registry.get(s.kind).isNeutral(s.params as never)
+  })
   const totalLen = baseLen + (needsTail ? TAIL_PADDING_SEC : 0)
 
   const ctx = new OfflineAudioContext(
@@ -181,12 +226,17 @@ export async function renderOffline(
   await loadWorklets(ctx)
 
   const nodes = chain
-    .filter(s => s.enabled && !isNeutral(s))
-    .map(s => registry.get(s.kind).build(ctx, s.params))
+    .filter(s => { const d = registry.get(s.kind); return s.enabled && !d.isNeutral(s.params as never) })
+    .map(s => registry.get(s.kind).build(ctx, s.params as never))
 
   const player = new AudioWorkletNode(ctx, 'wsola')
-  await loadBufferIntoPlayer(player, buffer)
+  await loadBufferIntoPlayer(player, buffer)   // posts source channels to WSOLA via port.postMessage
+                                                 // and awaits the worklet's 'loaded' ack — same handshake
+                                                 // the v1 renderOffline already does in graph.ts.
   player.port.postMessage({ type: 'play', offsetSec: trim.startSec, trim, chain })
+                                                 // 'chain' is included so the WSOLA worklet can read
+                                                 // the pitch slot's params (semitones, speed); pitch is
+                                                 // not built into the chain's audio path.
 
   let prev: AudioNode = player
   for (const node of nodes) { prev.connect(node.input); prev = node.output }
@@ -201,29 +251,30 @@ Three notes:
 - **Tail padding is conditional.** No active echo/reverb → render exactly `sourceDur / speed` seconds, identical to v1 length-wise. Existing v1-style exports stay byte-comparable in length.
 - **Same `EffectDefinition.build()` for live and offline.** What you preview is what you export — no parallel offline-only DSP path. This is the central guarantee.
 - **Speed extraction is centralized.** `getSpeedFromChain()` reads the (single) pitch slot. If pitch is bypassed/absent, speed = 1.
+- **Pitch is upstream of the chain in offline render too.** Like in live preview, the pitch slot's `build()` returns a passthrough — its semitones/speed reach WSOLA via the `play` message (`{ type: 'play', offsetSec, trim, chain }` — the WSOLA worklet reads the pitch slot from the chain). This keeps the offline and live paths symmetric.
 
 ## 4. UI / EffectsRack screen
 
 The flat 5-row screen becomes a slot list:
 
 ```
-┌─ Effects rack ─────────────── [Reset] ┐
-│ ⋮⋮  Crusher           [●] [▼] │  ← drag handle, enabled toggle, expand caret
-│     bit depth: 16-bit             │
-│     [2][4][8][12][16]             │
-│                                    │
-│ ⋮⋮  Sample rate       [●] [▼] │
-│     ...                            │
-│                                    │
-│ ⋮⋮  Echo              [●] [▶] │  ← collapsed
-│                                    │
-│ ⋮⋮  Reverb            [●] [▶] │
-│                                    │
-│ ┌─ + Add effect ───────────────┐ │
-│ │ Crusher · SR-hold · Pitch ·  │ │
-│ │ Filter · Echo · Reverb       │ │
-│ └──────────────────────────────┘ │
-└────────────────────────────────────┘
+┌─ Effects rack ─────────────────── [Reset] ┐
+│ ⋮⋮  Crusher        [●] [▼] [×] │  ← handle, enabled, expand, remove
+│     bit depth: 16-bit              │
+│     [2][4][8][12][16]              │
+│                                     │
+│ ⋮⋮  Sample rate    [●] [▼] [×] │
+│     ...                             │
+│                                     │
+│ ⋮⋮  Echo           [●] [▶] [×] │  ← collapsed
+│                                     │
+│ ⋮⋮  Reverb         [●] [▶] [×] │
+│                                     │
+│ ┌─ + Add effect ─────────────────┐ │
+│ │ Crusher · SR-hold · Pitch ·    │ │
+│ │ Filter · Echo · Reverb         │ │
+│ └────────────────────────────────┘ │
+└─────────────────────────────────────┘
 ```
 
 ### 4.1 Components
@@ -275,6 +326,7 @@ export const useSessionStore = create<SessionState>()(
 - Page reload restores the chain.
 - `source`, `playback`, `render`, `engineReady` are session-transient — not persisted.
 - When a fresh source loads, the **persisted chain wins** over the v1 default. The user's last setup carries forward.
+- **Reset writes to localStorage too.** Clicking Reset restores the v1 default chain *and* persists it. Reset → reload → still the default (no zombie pre-Reset chain).
 
 ### 5.2 Exports (IndexedDB) — additive
 
@@ -289,7 +341,8 @@ interface Export {
 ```
 
 - Forward-compatible additive change. No migration. Old exports read as `chainConfig: undefined`; the UI hides "Restore" for them.
-- Each export tile in the Exports screen gets a "Restore settings" button next to play/download/delete. Click → `store.setChain(export.chainConfig)` → engine rebuilds → user lands on the Effects screen with that export's exact chain loaded.
+- Each export tile in the Exports screen gets a "Restore settings" button next to play/download/delete. Click → `store.setChain(restoredChain)` → engine rebuilds → user lands on the Effects screen with that export's exact chain loaded.
+- **Slot ids are regenerated on restore.** `setChain(restoredChain)` walks the stored config and assigns fresh `crypto.randomUUID()` ids to each slot. Stored ids are not reused — they'd collide with the live chain's React keys and confuse dnd-kit's stable-identity contract.
 
 ## 6. DSP — Echo & Reverb (algorithmic spec)
 
@@ -379,6 +432,12 @@ output = input * (1 - mix) + (wet / 8) * mix    // /8 keeps wet level sane
 
 `mix < 0.05` → bypass-eligible.
 
+**Stereo handling (echo and reverb both):** the worklet processes channels independently with **per-channel state buffers** (delay buffer for echo; eight comb + four allpass buffers per channel for reverb). Tunings are identical across channels — there's no built-in stereo decorrelation. Mono input → mono out; stereo input → stereo out, with each channel processed in isolation. The integration test asserts L=R when fed an L=R input.
+
+**Echo `apply()` semantics:** updating `timeMs` adjusts the read-pointer offset against the existing circular buffer. The buffer itself is allocated once for `MAX_TIME_MS * sr / 1000` samples and reused. Updating `feedback` and `mix` is just a coefficient swap. No reallocation on slider drag.
+
+**Reverb `apply()` semantics:** updating `decay` is a feedback-coefficient swap. Updating `size` rescales the comb read-pointer offsets against existing buffers (which are sized for `size=1.0`). No reallocation.
+
 ## 7. Testing
 
 ### 7.1 Unit (`tests/unit/`, vitest + jsdom)
@@ -405,7 +464,7 @@ Worklet tests use the existing `processor-shim.ts` pattern to run `AudioWorkletP
 
 - **`tail-padding.test.ts`** — chain with active echo (`mix>=0.05`) → render length = `sourceDur + 4s`; chain with echo at `mix=0` → render length = `sourceDur`. Mirrors Android `AppendSilenceTailTest`.
 - **`chain-order.test.ts`** — *the proof that order matters*. Render `[BitCrusher, Reverb]` vs `[Reverb, BitCrusher]` on the same impulse; assert outputs differ by a measurable margin (RMS difference > threshold). Without this test, the entire premise of the refactor is unverified.
-- **`bit-exactness.test.ts`** — chain with all four legacy effects at neutral params → output bit-equal to source. Proves bypass-by-omission works end-to-end and v1 behavior is preserved.
+- **`v1-parity.test.ts`** — chain with all four legacy effects at neutral params, rendered through the new pedalboard, produces output **bit-equal to a stored fixture rendered by tag `v1`** (the same source, run through v1's hard-wired graph at default `EffectParams`). Asserts bypass-by-omission and the WSOLA-passthrough path together don't drift from v1 behavior. The fixture is generated once from `git checkout v1 && UPDATE_FIXTURES=1 npm run test:integration` (env-var pattern; Playwright doesn't ship a `--update-fixtures` flag) and committed as `tests/fixtures/v1-neutral-render.bin`. The integration runner reads `process.env.UPDATE_FIXTURES` — gate the write-vs-assert branch in the test itself. (Comparing against the *raw source* would fail — WSOLA at speed=1, semitones=0 isn't bit-transparent in practice.)
 
 ### 7.3 E2E (`tests/e2e/`, playwright + dev server)
 
@@ -422,7 +481,7 @@ A safe order to land this work in PR-sized chunks:
 1. **Tag v1** ✓ (already done — `git tag v1` at `aea2021`).
 2. **Introduce `src/audio/effects/` scaffolding**: `types.ts`, `registry.ts`, empty per-effect folders. No behavior change.
 3. **Refactor v1 effects into the new structure** (Crusher, SR-hold, Pitch, Filter). Existing `EffectsRack.tsx` keeps working but reads from the registry. Tests passing, no UI change visible.
-4. **Replace `EffectParams` with `Chain` in the store**, with the v1 default chain as the initial state. Engine wraps the chain into the existing hardcoded graph wiring (transitional). All existing tests still pass.
+4. **Replace `EffectParams` with `Chain` in the store**, with the v1 default chain as the initial state. The chain at this step contains only the four legacy `EffectKind`s (`crusher | srhold | pitch | filter`) — `echo` and `reverb` are not yet in the registry. The engine still uses its existing hard-wired wiring; the store change is data-shape-only. All existing tests still pass.
 5. **Implement `engine.rebuildChain()`** programmatically wiring slots in chain order. Remove the hardcoded wiring in `graph.ts`. Bit-exactness integration test gates this.
 6. **Build the new EffectsRack UI** with dnd-kit. Adds drag handles, enabled toggles, +Add, ×Remove. Reorder uses apply-on-release.
 7. **Port Echo worklet** from Android `EchoEffect.kt`. Echo unit tests gate this.
@@ -435,10 +494,9 @@ Each step is a self-contained PR with passing tests. Rollback is a `git revert` 
 
 ## 9. Open questions / risks
 
-- **Click on rebuild despite the 10ms ramp.** If artifacts are still audible in practice, options: longer ramp (~30ms), or use a `ConstantSourceNode`-driven envelope for sample-accurate timing. Decide after first integration run.
+- **Click on rebuild despite the 30ms ramp.** If artifacts are still audible after first integration run, escalate to a `ConstantSourceNode`-driven envelope for sample-accurate gain ramping.
 - **dnd-kit bundle cost.** ~30kB gzip. If bundle-size matters more than expected, fall back to up/down arrow buttons (zero deps); keyboard accessibility story is simpler too.
 - **Pitch slot's combined semitones+speed UI.** Today these are two separate `Param` rows. The pitch slot's panel must keep that two-control layout to not regress UX. The slot stays singular at the data level.
-- **WSOLA worklet position.** It currently sits *upstream* of the effects (it's the `player`). Pitch is therefore "first in chain" by construction — moving the pitch slot to a different position in the rack doesn't actually relocate WSOLA. The pitch slot's params reach WSOLA via `apply()`, but the *slot's chain position* is decorative. This is documented behavior: pitch is always pre-effects. If a user genuinely wants pitch-after-distortion they can't have it in v2; flag this in the pitch slot's panel ("applies before all effects").
 
 ## 10. References
 
@@ -446,3 +504,4 @@ Each step is a self-contained PR with passing tests. Rollback is a `git revert` 
 - Android tests to translate: `../archive/IMakeHeat/app/src/test/java/com/dewoller/imakeheat/audio/{Echo,Reverb,AppendSilenceTail}EffectTest.kt`
 - SP-404MK2 effects catalog (roadmap source): `~/Downloads/SP-404mk2_effects_reference.md`
 - Existing v1 baseline: tag `v1` at commit `aea2021`
+- **Predecessor design:** the original PWA design at `../imakeheat/docs/superpowers/specs/2026-04-28-imakeheat-pwa-design.md` (referenced in CLAUDE.md) describes v1's hard-wired graph and store. This spec **extends** that one — the audio engine, store, and screen architecture remain; only the effects layer is restructured. Where the documents disagree (e.g. flat `EffectParams` in the predecessor vs. `Chain` here), this spec wins for v2 onward.
