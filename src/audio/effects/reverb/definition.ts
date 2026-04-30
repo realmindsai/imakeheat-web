@@ -1,13 +1,26 @@
-// ABOUTME: Reverb effect definition — size/decay/mix stub.
-// ABOUTME: Real build()/Panel arrive in Task 1.4-1.8; registry contract only here.
+// ABOUTME: Reverb EffectDefinition — passthrough placeholder; real worklet lands in Task 4.2.
+// ABOUTME: Default mix=0 means the slot is bypass-eligible until the user turns it up.
 
 import { register } from '../_internal'
+import type { EffectDefinition, EffectNode } from '../types'
+import { ReverbPanel } from './panel'
 
-register({
+type P = { size: number; decay: number; mix: number }
+
+const def: EffectDefinition<'reverb'> = {
   kind: 'reverb',
   displayName: 'Reverb',
   defaultParams: { size: 0.5, decay: 0.5, mix: 0 },
   isNeutral: (p) => p.mix < 0.05,
-  build: () => { throw new Error('reverb.build not yet implemented (Task 1.4-1.8)') },
-  Panel: () => null as never,
-})
+  build(ctx): EffectNode<P> {
+    const gain = (ctx as AudioContext | OfflineAudioContext).createGain()
+    gain.gain.value = 1
+    return {
+      input: gain, output: gain,
+      apply() { /* TODO(Task 4.2): post params to reverb worklet */ },
+      dispose() { gain.disconnect() },
+    }
+  },
+  Panel: ReverbPanel,
+}
+register(def)
