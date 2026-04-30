@@ -2,7 +2,20 @@
 // ABOUTME: Exposes CRUD helpers, a change-event bus, and __resetForTests for vitest + fake-indexeddb.
 
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
-import type { EffectParams, TrimPoints } from '../audio/types'
+import type { TrimPoints } from '../audio/types'
+
+// Legacy EffectParams shape — kept locally because IndexedDB records written
+// by pre-pedalboard versions still carry it. New records (post-pedalboard
+// migration) won't write this — Task 5.3 lands a `chainConfig` field that
+// captures the slot-based chain instead. Defined inline here rather than
+// re-exported, so this is the only module that retains the legacy shape.
+export interface LegacyEffectParamsSnapshot {
+  bitDepth: 2 | 4 | 8 | 12 | 16
+  sampleRateHz: number
+  pitchSemitones: number
+  speed: number
+  filterValue: number
+}
 
 export interface ExportRecord {
   id: string
@@ -16,11 +29,9 @@ export interface ExportRecord {
   sampleRateHz: number
   kind: 'WAV'
   starred: boolean
-  // fxSnapshot is the legacy EffectParams snapshot. New records (post-pedalboard
-  // migration) won't write this — Task 5.3 lands a `chainConfig` field that
-  // captures the slot-based chain instead. Kept optional so older records still
-  // round-trip cleanly.
-  fxSnapshot?: EffectParams
+  // fxSnapshot is the legacy EffectParams snapshot. Kept optional so older
+  // records still round-trip cleanly through normalize().
+  fxSnapshot?: LegacyEffectParamsSnapshot
   trimSnapshot: TrimPoints
 }
 

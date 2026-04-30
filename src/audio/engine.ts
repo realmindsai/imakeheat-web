@@ -5,7 +5,7 @@ import { loadWorklets, renderOffline } from './graph'
 import { startRecording, type ActiveRecording } from './recorder'
 import { registry } from './effects/registry'
 import type { Chain, EffectNode, Slot } from './effects/types'
-import type { EffectParams, TrimPoints } from './types'
+import type { TrimPoints } from './types'
 
 import wsolaUrl from './worklets/wsola.worklet.ts?worker&url'
 
@@ -305,19 +305,7 @@ export class AudioEngine {
   }
 
   async render(buffer: AudioBuffer, trim: TrimPoints, chain: Chain): Promise<AudioBuffer> {
-    const sr = buffer.sampleRate
-    const speed = speedFromChain(chain)
-    const length = Math.max(1, Math.ceil(((trim.endSec - trim.startSec) / speed) * sr))
-    const offline = new OfflineAudioContext({
-      numberOfChannels: buffer.numberOfChannels,
-      length,
-      sampleRate: sr,
-    })
-    // TRANSITIONAL: Task 2.5 will rewrite renderOffline to take a Chain directly.
-    // For now, derive an EffectParams snapshot from the chain so the legacy
-    // renderOffline still produces correct audio for live exports.
-    const fx = chainToEffectParams(chain, sr)
-    return renderOffline(offline, buffer, trim, fx)
+    return renderOffline(buffer, trim, chain)
   }
 }
 
@@ -334,36 +322,4 @@ function isSlotNeutral(slot: Slot): boolean {
   const def = registry.get(slot.kind)
   if (!def) return true
   return def.isNeutral(slot.params as never)
-}
-
-/**
- * TRANSITIONAL: Task 2.5 deletes this. Bridges the new Chain back to the legacy
- * EffectParams shape so the unmigrated renderOffline path keeps working.
- */
-function chainToEffectParams(chain: Chain, sourceRate: number): EffectParams {
-  // Default to neutral so a missing/disabled slot has no effect on the render.
-  const fx: EffectParams = {
-    bitDepth: 16,
-    sampleRateHz: sourceRate,
-    pitchSemitones: 0,
-    speed: 1,
-    filterValue: 0,
-  }
-  for (const s of chain) {
-    if (!s.enabled) continue
-    if (isSlotNeutral(s)) continue
-    switch (s.kind) {
-      case 'crusher': fx.bitDepth = (s.params as { bitDepth: 2 | 4 | 8 | 12 | 16 }).bitDepth; break
-      case 'srhold':  fx.sampleRateHz = (s.params as { sampleRateHz: number }).sampleRateHz; break
-      case 'pitch': {
-        const p = s.params as { semitones: number; speed: number }
-        fx.pitchSemitones = p.semitones
-        fx.speed = p.speed
-        break
-      }
-      case 'filter': fx.filterValue = (s.params as { value: number }).value; break
-      // echo/reverb don't map onto the legacy EffectParams shape — Task 2.5 fixes this.
-    }
-  }
-  return fx
 }

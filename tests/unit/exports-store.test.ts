@@ -9,13 +9,13 @@ import {
   type ExportRecord,
 } from '../../src/store/exports'
 import { defaultTrim } from '../../src/store/session'
-import type { EffectParams } from '../../src/audio/types'
+import type { LegacyEffectParamsSnapshot } from '../../src/store/exports'
 
 // Legacy EffectParams baseline used by these back-compat tests. The live store
 // no longer surfaces this shape (Task 2.2 replaced it with Chain), but
 // IndexedDB records written by older versions still carry it, so the
 // normalize-on-read path must keep working.
-const legacyEffects: EffectParams = {
+const legacyEffects: LegacyEffectParamsSnapshot = {
   bitDepth: 16,
   sampleRateHz: 44100,
   pitchSemitones: 0,
