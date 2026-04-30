@@ -8,13 +8,14 @@ import { TrimWaveform } from '../components/TrimWaveform'
 import { PrimaryButton } from '../components/PrimaryButton'
 import { GhostButton } from '../components/GhostButton'
 import { Icon } from '../components/icons'
-import { useSessionStore, defaultEffects } from '../store/session'
+import { useSessionStore } from '../store/session'
 import { engine } from '../audio/engine'
 import { navigate } from '../lib/router'
 
 export function Preview() {
   const source = useSessionStore((s) => s.source)
   const trim = useSessionStore((s) => s.trim)
+  const chain = useSessionStore((s) => s.chain)
   const playing = useSessionStore((s) => s.playback.isPlaying)
 
   if (!source) {
@@ -27,7 +28,9 @@ export function Preview() {
       engine.pause()
       useSessionStore.getState().setPlayback({ isPlaying: false })
     } else {
-      await engine.play(trim, defaultEffects)
+      // Preview screen plays the source dry. We pass the current chain anyway
+      // so WSOLA picks up neutral pitch/speed; downstream slots just pass through.
+      await engine.play(trim, chain)
       useSessionStore.getState().setPlayback({ isPlaying: true })
     }
   }

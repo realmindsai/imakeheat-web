@@ -16,7 +16,11 @@ export interface ExportRecord {
   sampleRateHz: number
   kind: 'WAV'
   starred: boolean
-  fxSnapshot: EffectParams
+  // fxSnapshot is the legacy EffectParams snapshot. New records (post-pedalboard
+  // migration) won't write this — Task 5.3 lands a `chainConfig` field that
+  // captures the slot-based chain instead. Kept optional so older records still
+  // round-trip cleanly.
+  fxSnapshot?: EffectParams
   trimSnapshot: TrimPoints
 }
 
@@ -59,6 +63,7 @@ export function initExportsDb(): Promise<IDBPDatabase<ImaKeHeatDB>> {
 }
 
 function normalize(rec: ExportRecord): ExportRecord {
+  if (!rec.fxSnapshot) return rec
   if (rec.fxSnapshot.speed !== undefined) return rec
   // Records written before the speed field existed: backfill speed=1.
   // Guard above ensures we only reach here when speed is genuinely absent.
