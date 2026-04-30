@@ -1,13 +1,35 @@
-// ABOUTME: SR-hold effect definition — sample-rate hold stub.
-// ABOUTME: Real build()/Panel arrive in Task 1.4-1.8; registry contract only here.
+// ABOUTME: SR-hold EffectDefinition — wraps the existing srhold worklet as an EffectNode.
+// ABOUTME: holdFactor = floor(ctx.sampleRate / params.sampleRateHz), min 1; param updates re-post.
 
 import { register } from '../_internal'
+import type { EffectDefinition, EffectNode } from '../types'
+import srholdUrl from '../../worklets/srhold.worklet.ts?worker&url'
+import { SrHoldPanel } from './panel'
 
-register({
+void srholdUrl   // keep side-effect import alive under strict unused-binding lint
+
+type P = { sampleRateHz: number }
+
+const def: EffectDefinition<'srhold'> = {
   kind: 'srhold',
-  displayName: 'SR Hold',
+  displayName: 'Sample rate',
   defaultParams: { sampleRateHz: 48000 },
+  // TODO(Task 2.4): override at engine level using actual source.sampleRateHz.
+  // Conservative threshold here keeps slots in the chain unless explicitly maxed.
   isNeutral: (p) => p.sampleRateHz >= 48000,
-  build: () => { throw new Error('srhold.build not yet implemented (Task 1.4-1.8)') },
-  Panel: () => null as never,
-})
+  build(ctx, params): EffectNode<P> {
+    const node = new AudioWorkletNode(ctx, 'srhold')
+    const holdFactor = Math.max(1, Math.floor(ctx.sampleRate / Math.max(1, params.sampleRateHz)))
+    node.port.postMessage({ holdFactor })
+    return {
+      input: node, output: node,
+      apply(p) {
+        const hf = Math.max(1, Math.floor(ctx.sampleRate / Math.max(1, p.sampleRateHz)))
+        node.port.postMessage({ holdFactor: hf })
+      },
+      dispose() { node.disconnect() },
+    }
+  },
+  Panel: SrHoldPanel,
+}
+register(def)
