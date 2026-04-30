@@ -1,9 +1,12 @@
-// ABOUTME: Reverb EffectDefinition — passthrough placeholder; real worklet lands in Task 4.2.
+// ABOUTME: Reverb EffectDefinition — wraps the reverb worklet (Android ReverbEffect.kt port).
 // ABOUTME: Default mix=0 means the slot is bypass-eligible until the user turns it up.
 
 import { register } from '../_internal'
 import type { EffectDefinition, EffectNode } from '../types'
+import reverbUrl from '../../worklets/reverb.worklet.ts?worker&url'
 import { ReverbPanel } from './panel'
+
+void reverbUrl // keep side-effect import alive under strict unused-binding lint
 
 type P = { size: number; decay: number; mix: number }
 
@@ -12,13 +15,18 @@ const def: EffectDefinition<'reverb'> = {
   displayName: 'Reverb',
   defaultParams: { size: 0.5, decay: 0.5, mix: 0 },
   isNeutral: (p) => p.mix < 0.05,
-  build(ctx): EffectNode<P> {
-    const gain = (ctx as AudioContext | OfflineAudioContext).createGain()
-    gain.gain.value = 1
+  build(ctx, params): EffectNode<P> {
+    const node = new AudioWorkletNode(ctx, 'reverb')
+    node.port.postMessage(params)
     return {
-      input: gain, output: gain,
-      apply() { /* TODO(Task 4.2): post params to reverb worklet */ },
-      dispose() { gain.disconnect() },
+      input: node,
+      output: node,
+      apply(p) {
+        node.port.postMessage(p)
+      },
+      dispose() {
+        node.disconnect()
+      },
     }
   },
   Panel: ReverbPanel,
