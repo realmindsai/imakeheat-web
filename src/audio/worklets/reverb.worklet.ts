@@ -83,7 +83,10 @@ export class ReverbProcessor extends AudioWorkletProcessor {
 
   constructor(_sr?: number) {
     super()
-    this.sr = _sr ?? sampleRate
+    // _sr is only used by unit tests (which pass a number explicitly). At runtime
+    // the AudioWorklet engine passes an AudioWorkletNodeOptions object as the
+    // first ctor arg — so guard against that and fall back to the global sampleRate.
+    this.sr = typeof _sr === 'number' ? _sr : sampleRate
     ;(this as unknown as { port: MessagePort }).port.onmessage = (ev: MessageEvent) => {
       const d = ev.data as { size?: number; decay?: number; mix?: number }
       if (typeof d.size === 'number') {

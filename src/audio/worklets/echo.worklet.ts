@@ -26,7 +26,10 @@ export class EchoProcessor extends AudioWorkletProcessor {
 
   constructor(_sampleRate?: number) {
     super()
-    this.sr = _sampleRate ?? sampleRate
+    // _sampleRate is only used by unit tests (which pass a number explicitly).
+    // At runtime the engine passes an AudioWorkletNodeOptions object as the
+    // first ctor arg — guard against that and fall back to the global sampleRate.
+    this.sr = typeof _sampleRate === 'number' ? _sampleRate : sampleRate
     this.bufferSize = Math.floor((this.sr * MAX_TIME_MS) / 1000) + 1
     this.delaySamples = this.clampTime(250)
     ;(this as unknown as { port: MessagePort }).port.onmessage = (ev: MessageEvent) => {
