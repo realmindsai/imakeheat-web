@@ -39,6 +39,8 @@ function valueLabel(slot: Slot): string {
       return `mix ${slot.params.mix.toFixed(2)}`
     case 'reverb':
       return `mix ${slot.params.mix.toFixed(2)}`
+    case 'vinyl303':
+      return `comp ${slot.params.comp}`
   }
 }
 

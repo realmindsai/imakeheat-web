@@ -2,9 +2,17 @@ import { describe, it, expect } from 'vitest'
 import { registry } from '../../../src/audio/effects/registry'
 
 describe('effect registry', () => {
-  it('exposes all six effect kinds', () => {
+  it('exposes all seven effect kinds after 303 VinylSim lands', () => {
     const kinds = Array.from(registry.keys()).sort()
-    expect(kinds).toEqual(['crusher', 'echo', 'filter', 'pitch', 'reverb', 'srhold'])
+    expect(kinds).toEqual([
+      'crusher',
+      'echo',
+      'filter',
+      'pitch',
+      'reverb',
+      'srhold',
+      'vinyl303',
+    ])
   })
   it('every definition has the required shape', () => {
     for (const def of registry.values()) {

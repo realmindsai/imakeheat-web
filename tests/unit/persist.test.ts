@@ -17,6 +17,14 @@ describe('chain persistence', () => {
     expect(persisted.state.chain).toEqual(before)
   })
 
+  it('persisted chain round-trips a 303 VinylSim slot', () => {
+    useSessionStore.getState().addSlot('vinyl303')
+    const chain = useSessionStore.getState().chain
+    const persisted = JSON.parse(localStorage.getItem('imakeheat-chain') ?? '{}')
+    expect(persisted.state.chain).toEqual(chain)
+    expect(persisted.state.chain.at(-1).kind).toBe('vinyl303')
+  })
+
   it('Reset writes the v1 default chain to localStorage', () => {
     useSessionStore.getState().addSlot('echo')
     useSessionStore.getState().resetChain()

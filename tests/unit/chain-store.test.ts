@@ -20,6 +20,18 @@ describe('chain store', () => {
     expect(c[c.length - 1].kind).toBe('echo')
     expect(c[c.length - 1].id).toMatch(/^[0-9a-f-]{36}$/)
   })
+  it('addSlot appends 303 VinylSim with neutral defaults and a fresh id', () => {
+    const before = useSessionStore.getState().chain.length
+    useSessionStore.getState().addSlot('vinyl303')
+    const c = useSessionStore.getState().chain
+    expect(c.length).toBe(before + 1)
+    expect(c[c.length - 1]).toMatchObject({
+      kind: 'vinyl303',
+      enabled: true,
+      params: { comp: 0, noise: 0, wowFlutter: 0, level: 100 },
+    })
+    expect(c[c.length - 1].id).toMatch(/^[0-9a-f-]{36}$/)
+  })
   it('removeSlot removes by id', () => {
     const id = useSessionStore.getState().chain[0].id
     useSessionStore.getState().removeSlot(id)

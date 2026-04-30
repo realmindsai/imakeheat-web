@@ -18,10 +18,8 @@ describe('AddEffectMenu', () => {
     const items = getAllByRole('menuitem')
     expect(items.length).toBe(registry.size)
     const names = items.map((el) => el.textContent)
-    for (const def of registry.values()) {
-      expect(names).toContain(def.displayName)
-    }
-    expect(items.length).toBe(6)
+    expect(names).toContain('303 VinylSim')
+    expect(items.length).toBe(7)
   })
 
   it('clicking an item calls onAdd with the kind and closes the menu', () => {

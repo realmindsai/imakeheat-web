@@ -40,6 +40,22 @@ test('+Add Echo appends a 5th slot, default-collapsed', async ({ page }) => {
   await expect(page.getByRole('group', { name: /Filter, position 4 of 5/ })).toBeVisible()
 })
 
+test('+Add 303 VinylSim shows its labeled controls', async ({ page }) => {
+  await gotoEffects(page)
+  await page.getByRole('button', { name: '+ Add effect' }).click()
+  await page.getByRole('menuitem', { name: '303 VinylSim' }).click()
+
+  const group = page.getByRole('group', { name: /303 VinylSim, position 5 of 5/ })
+  await expect(group).toBeVisible()
+  const toggle = group.getByRole('button', { name: /Expand 303 VinylSim|Collapse 303 VinylSim/ })
+  if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click()
+
+  await expect(group.getByText('Comp', { exact: true })).toBeVisible()
+  await expect(group.getByText('Noise', { exact: true })).toBeVisible()
+  await expect(group.getByText('Wow/flutter', { exact: true })).toBeVisible()
+  await expect(group.getByText('Level', { exact: true })).toBeVisible()
+})
+
 test('× removes a slot', async ({ page }) => {
   await gotoEffects(page)
   await page.getByRole('button', { name: '+ Add effect' }).click()
