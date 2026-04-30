@@ -19,7 +19,8 @@ describe('AddEffectMenu', () => {
     expect(items.length).toBe(registry.size)
     const names = items.map((el) => el.textContent)
     expect(names).toContain('303 VinylSim')
-    expect(items.length).toBe(7)
+    expect(names).toContain('404 VinylSim')
+    expect(items.length).toBe(8)
   })
 
   it('clicking an item calls onAdd with the kind and closes the menu', () => {

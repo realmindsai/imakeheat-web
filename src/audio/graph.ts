@@ -11,6 +11,7 @@ import wsolaUrl from './worklets/wsola.worklet.ts?worker&url'
 import echoUrl from './worklets/echo.worklet.ts?worker&url'
 import reverbUrl from './worklets/reverb.worklet.ts?worker&url'
 import vinyl303Url from './worklets/vinyl303.worklet.ts?worker&url'
+import vinyl404Url from './worklets/vinyl404.worklet.ts?worker&url'
 
 export async function loadWorklets(ctx: BaseAudioContext): Promise<void> {
   await ctx.audioWorklet.addModule(bitcrusherUrl)
@@ -19,6 +20,7 @@ export async function loadWorklets(ctx: BaseAudioContext): Promise<void> {
   await ctx.audioWorklet.addModule(echoUrl)
   await ctx.audioWorklet.addModule(reverbUrl)
   await ctx.audioWorklet.addModule(vinyl303Url)
+  await ctx.audioWorklet.addModule(vinyl404Url)
 }
 
 function speedFromChain(chain: Chain): number {
