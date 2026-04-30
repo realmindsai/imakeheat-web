@@ -1,12 +1,23 @@
 import { test, expect } from '@playwright/test'
+import type { Chain } from '../../src/audio/effects/types'
+
+function chainWith(filterValue: number, sr: number): Chain {
+  return [
+    { id: 'c', kind: 'crusher', enabled: true, params: { bitDepth: 16 } },
+    { id: 's', kind: 'srhold',  enabled: true, params: { sampleRateHz: sr } },
+    { id: 'p', kind: 'pitch',   enabled: true, params: { semitones: 0, speed: 1 } },
+    { id: 'f', kind: 'filter',  enabled: true, params: { value: filterValue } },
+  ]
+}
 
 test.describe('filter attenuation', () => {
   test('lowpass at filterValue=-1 attenuates 8 kHz tone', async ({ page }) => {
     await page.goto('/tests/integration/index.html')
     await expect(page.locator('#status')).toHaveText('ready')
 
-    const result = await page.evaluate(async () => {
-      const sr = 48000
+    const sr = 48000
+    const chain = chainWith(-1, sr)
+    const result = await page.evaluate(async ({ chain, sr }) => {
       const dur = 0.2
       const N = Math.round(sr * dur)
       const ch = new Float32Array(N)
@@ -15,10 +26,10 @@ test.describe('filter attenuation', () => {
         kind: 'render',
         sourcePcm: [Array.from(ch)],
         sampleRate: sr,
-        effects: { bitDepth: 16, sampleRateHz: sr, pitchSemitones: 0, speed: 1, filterValue: -1 },
+        chain,
         trim: { startSec: 0, endSec: dur },
       })
-    })
+    }, { chain, sr })
 
     const inputRms = 0.5 / Math.sqrt(2)
     const outputRms = Math.sqrt(result.pcm[0].reduce((s: number, v: number) => s + v * v, 0) / result.pcm[0].length)
@@ -30,8 +41,9 @@ test.describe('filter attenuation', () => {
     await page.goto('/tests/integration/index.html')
     await expect(page.locator('#status')).toHaveText('ready')
 
-    const result = await page.evaluate(async () => {
-      const sr = 48000
+    const sr = 48000
+    const chain = chainWith(1, sr)
+    const result = await page.evaluate(async ({ chain, sr }) => {
       const dur = 0.2
       const N = Math.round(sr * dur)
       const ch = new Float32Array(N)
@@ -40,10 +52,10 @@ test.describe('filter attenuation', () => {
         kind: 'render',
         sourcePcm: [Array.from(ch)],
         sampleRate: sr,
-        effects: { bitDepth: 16, sampleRateHz: sr, pitchSemitones: 0, speed: 1, filterValue: 1 },
+        chain,
         trim: { startSec: 0, endSec: dur },
       })
-    })
+    }, { chain, sr })
 
     const inputRms = 0.5 / Math.sqrt(2)
     const outputRms = Math.sqrt(result.pcm[0].reduce((s: number, v: number) => s + v * v, 0) / result.pcm[0].length)
@@ -55,8 +67,9 @@ test.describe('filter attenuation', () => {
     await page.goto('/tests/integration/index.html')
     await expect(page.locator('#status')).toHaveText('ready')
 
-    const result = await page.evaluate(async () => {
-      const sr = 48000
+    const sr = 48000
+    const chain = chainWith(0, sr)
+    const result = await page.evaluate(async ({ chain, sr }) => {
       const dur = 0.2
       const N = Math.round(sr * dur)
       const ch = new Float32Array(N)
@@ -65,10 +78,10 @@ test.describe('filter attenuation', () => {
         kind: 'render',
         sourcePcm: [Array.from(ch)],
         sampleRate: sr,
-        effects: { bitDepth: 16, sampleRateHz: sr, pitchSemitones: 0, speed: 1, filterValue: 0 },
+        chain,
         trim: { startSec: 0, endSec: dur },
       })
-    })
+    }, { chain, sr })
 
     const inputRms = 0.5 / Math.sqrt(2)
     const outputRms = Math.sqrt(result.pcm[0].reduce((s: number, v: number) => s + v * v, 0) / result.pcm[0].length)

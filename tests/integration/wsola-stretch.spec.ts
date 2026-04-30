@@ -1,13 +1,32 @@
 import { test, expect } from '@playwright/test'
+import type { Chain } from '../../src/audio/effects/types'
 
 const PRIMING = 128 // one 128-sample block, per spec §5.7
 const EPS = 1e-4    // float epsilon for cross-implementation comparison
+
+function stretchChain(opts: {
+  bitDepth?: 2 | 4 | 8 | 12 | 16
+  sampleRateHz?: number
+  semitones?: number
+  speed?: number
+  filterValue?: number
+}): Chain {
+  return [
+    { id: 'c', kind: 'crusher', enabled: true, params: { bitDepth: opts.bitDepth ?? 16 } },
+    { id: 's', kind: 'srhold',  enabled: true, params: { sampleRateHz: opts.sampleRateHz ?? 48000 } },
+    { id: 'p', kind: 'pitch',   enabled: true, params: { semitones: opts.semitones ?? 0, speed: opts.speed ?? 1 } },
+    { id: 'f', kind: 'filter',  enabled: true, params: { value: opts.filterValue ?? 0 } },
+  ]
+}
 
 test('neutral parity: WSOLA path equals legacy BufferSource path', async ({ page }) => {
   await page.goto('/tests/integration/index.html')
   await expect(page.locator('#status')).toHaveText('ready')
 
-  const result = await page.evaluate(async () => {
+  const sr = 48000
+  const chain = stretchChain({ bitDepth: 16, sampleRateHz: sr, semitones: 0, speed: 1, filterValue: 0 })
+  const legacyFx = { bitDepth: 16, sampleRateHz: sr, pitchSemitones: 0, speed: 1, filterValue: 0 }
+  const result = await page.evaluate(async ({ chain, legacyFx }) => {
     const sr = 48000
     const dur = 0.3
     const N = Math.round(sr * dur)
@@ -19,16 +38,13 @@ test('neutral parity: WSOLA path equals legacy BufferSource path', async ({ page
         0.1 * Math.sin((2 * Math.PI * 3300 * i) / sr)
     }
     ch[Math.floor(N * 0.5)] += 0.5 // click transient
-    const payload = {
-      sourcePcm: [Array.from(ch)],
-      sampleRate: sr,
-      effects: { bitDepth: 16 as const, sampleRateHz: sr, pitchSemitones: 0, speed: 1, filterValue: 0 },
-      trim: { startSec: 0, endSec: dur },
-    }
-    const wsola = await window.__run({ ...payload, kind: 'render' })
-    const legacy = await window.__run({ ...payload, kind: 'render-legacy' })
+    const sourcePcm = [Array.from(ch)]
+    const sampleRate = sr
+    const trim = { startSec: 0, endSec: dur }
+    const wsola = await window.__run({ kind: 'render', sourcePcm, sampleRate, chain, trim })
+    const legacy = await window.__run({ kind: 'render-legacy', sourcePcm, sampleRate, legacyFx, trim })
     return { wsola, legacy }
-  })
+  }, { chain, legacyFx })
 
   expect(result.wsola.pcm[0].length).toBeGreaterThan(0)
   expect(result.legacy.pcm[0].length).toBeGreaterThan(0)
@@ -60,7 +76,8 @@ test('THD at 0.5x speed on a 220 Hz sine is below 1.5%', async ({ page }) => {
   await page.goto('/tests/integration/index.html')
   await expect(page.locator('#status')).toHaveText('ready')
 
-  const result = await page.evaluate(async () => {
+  const chain = stretchChain({ bitDepth: 16, sampleRateHz: 48000, semitones: 0, speed: 0.5, filterValue: 0 })
+  const result = await page.evaluate(async ({ chain }) => {
     const sr = 48000
     const dur = 0.5
     const N = Math.round(sr * dur)
@@ -70,10 +87,10 @@ test('THD at 0.5x speed on a 220 Hz sine is below 1.5%', async ({ page }) => {
       kind: 'render',
       sourcePcm: [Array.from(ch)],
       sampleRate: sr,
-      effects: { bitDepth: 16 as const, sampleRateHz: sr, pitchSemitones: 0, speed: 0.5, filterValue: 0 },
+      chain,
       trim: { startSec: 0, endSec: dur },
     })
-  })
+  }, { chain })
 
   // Cheap THD proxy: dominant zero-cross frequency is ~220 Hz, and signal smoothed
   // by a 4-tap moving average retains ≥98% rms (no high-freq junk from splice clicks).
@@ -100,7 +117,8 @@ test('transient localisation: a click at speed=2 stays narrow', async ({ page })
   await page.goto('/tests/integration/index.html')
   await expect(page.locator('#status')).toHaveText('ready')
 
-  const result = await page.evaluate(async () => {
+  const chain = stretchChain({ bitDepth: 16, sampleRateHz: 48000, semitones: 0, speed: 2, filterValue: 0 })
+  const result = await page.evaluate(async ({ chain }) => {
     const sr = 48000
     const dur = 0.2
     const N = Math.round(sr * dur)
@@ -110,10 +128,10 @@ test('transient localisation: a click at speed=2 stays narrow', async ({ page })
       kind: 'render',
       sourcePcm: [Array.from(ch)],
       sampleRate: sr,
-      effects: { bitDepth: 16 as const, sampleRateHz: sr, pitchSemitones: 0, speed: 2, filterValue: 0 },
+      chain,
       trim: { startSec: 0, endSec: dur },
     })
-  })
+  }, { chain })
 
   const buf = result.pcm[0]
   let peakIdx = 0, peakVal = 0
@@ -131,7 +149,8 @@ test('stereo symmetry preserved at speed=0.7, pitch=+3', async ({ page }) => {
   await page.goto('/tests/integration/index.html')
   await expect(page.locator('#status')).toHaveText('ready')
 
-  const result = await page.evaluate(async () => {
+  const chain = stretchChain({ bitDepth: 16, sampleRateHz: 48000, semitones: 3, speed: 0.7, filterValue: 0 })
+  const result = await page.evaluate(async ({ chain }) => {
     const sr = 48000
     const dur = 0.2
     const N = Math.round(sr * dur)
@@ -141,10 +160,10 @@ test('stereo symmetry preserved at speed=0.7, pitch=+3', async ({ page }) => {
       kind: 'render',
       sourcePcm: [Array.from(ch), Array.from(ch)],
       sampleRate: sr,
-      effects: { bitDepth: 16 as const, sampleRateHz: sr, pitchSemitones: 3, speed: 0.7, filterValue: 0 },
+      chain,
       trim: { startSec: 0, endSec: dur },
     })
-  })
+  }, { chain })
 
   expect(result.pcm.length).toBe(2)
   for (let i = 0; i < result.pcm[0].length; i++) {
@@ -156,7 +175,8 @@ test('downstream filter still attenuates at non-neutral stretch', async ({ page 
   await page.goto('/tests/integration/index.html')
   await expect(page.locator('#status')).toHaveText('ready')
 
-  const result = await page.evaluate(async () => {
+  const chain = stretchChain({ bitDepth: 16, sampleRateHz: 48000, semitones: -3, speed: 0.7, filterValue: -1 })
+  const result = await page.evaluate(async ({ chain }) => {
     const sr = 48000
     const dur = 0.3
     const N = Math.round(sr * dur)
@@ -166,10 +186,10 @@ test('downstream filter still attenuates at non-neutral stretch', async ({ page 
       kind: 'render',
       sourcePcm: [Array.from(ch)],
       sampleRate: sr,
-      effects: { bitDepth: 16 as const, sampleRateHz: sr, pitchSemitones: -3, speed: 0.7, filterValue: -1 },
+      chain,
       trim: { startSec: 0, endSec: dur },
     })
-  })
+  }, { chain })
 
   const inputRms = 0.5 / Math.sqrt(2)
   let outRms = 0

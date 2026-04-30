@@ -5,6 +5,7 @@ import { test, expect } from '@playwright/test'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { Chain } from '../../src/audio/effects/types'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const FIXTURE = resolve(HERE, '../fixtures/v1-neutral-render.bin')
@@ -24,22 +25,23 @@ test('chain at v1-neutral produces output bit-equal to v1 baseline fixture', asy
   await expect(page.locator('#status')).toHaveText('ready')
 
   const source = buildSource()
-  const result = await page.evaluate(async (src) => {
-    return await (window as any).__run({
+  // Equivalent of v1 `defaultEffects` from src/store/session.ts:
+  //   bitDepth: 16, sampleRateHz: 44100, pitchSemitones: 0, speed: 1, filterValue: 0
+  const chain: Chain = [
+    { id: 'c', kind: 'crusher', enabled: true, params: { bitDepth: 16 } },
+    { id: 's', kind: 'srhold',  enabled: true, params: { sampleRateHz: 44100 } },
+    { id: 'p', kind: 'pitch',   enabled: true, params: { semitones: 0, speed: 1 } },
+    { id: 'f', kind: 'filter',  enabled: true, params: { value: 0 } },
+  ]
+  const result = await page.evaluate(async ({ src, chain }) => {
+    return await window.__run({
       kind: 'render',
       sourcePcm: [src], // mono
       sampleRate: 48000,
-      // Defaults equal to v1 `defaultEffects` from src/store/session.ts.
-      effects: {
-        bitDepth: 16,
-        sampleRateHz: 44100,
-        pitchSemitones: 0,
-        speed: 1,
-        filterValue: 0,
-      },
+      chain,
       trim: { startSec: 0, endSec: 1 },
     })
-  }, source)
+  }, { src: source, chain })
 
   // Output is { pcm: number[][], sampleRate, length }. Mono → channel 0.
   const out = new Float32Array(result.pcm[0])
