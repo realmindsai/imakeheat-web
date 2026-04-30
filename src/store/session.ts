@@ -2,6 +2,7 @@
 // ABOUTME: Holds source, chain (effect slots), trim, playback, render state, engine readiness, and routing.
 
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 import type { TrimPoints } from '../audio/types'
 import type { Chain, EffectKind, ParamsOf, Slot } from '../audio/effects/types'
 import { registry } from '../audio/effects/registry'
@@ -80,7 +81,9 @@ const initialState = (): Omit<SessionState, 'setSource' | 'clearSource' | 'setTr
   srManuallyAdjusted: false,
 })
 
-export const useSessionStore = create<SessionState>((set, _get) => ({
+export const useSessionStore = create<SessionState>()(
+  persist(
+    (set, _get) => ({
   ...initialState(),
 
   setSource: (source) =>
@@ -158,4 +161,10 @@ export const useSessionStore = create<SessionState>((set, _get) => ({
   finishRender: () => set({ render: { phase: 'idle' } }),
   failRender: (message) => set({ render: { phase: 'error', message } }),
   reset: () => set(initialState()),
-}))
+    }),
+    {
+      name: 'imakeheat-chain',
+      partialize: (s) => ({ chain: s.chain }),
+    },
+  ),
+)
