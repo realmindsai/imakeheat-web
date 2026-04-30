@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { useSessionStore, defaultEffects, defaultTrim } from '../../src/store/session'
+import { useSessionStore, defaultTrim } from '../../src/store/session'
 
 describe('session store', () => {
   beforeEach(() => {
@@ -9,7 +9,7 @@ describe('session store', () => {
   it('starts with sensible defaults', () => {
     const s = useSessionStore.getState()
     expect(s.source).toBeNull()
-    expect(s.effects).toEqual(defaultEffects)
+    expect(s.chain.map(x => x.kind)).toEqual(['crusher', 'srhold', 'pitch', 'filter'])
     expect(s.trim).toEqual(defaultTrim)
     expect(s.playback.isPlaying).toBe(false)
     expect(s.render.phase).toBe('idle')
@@ -17,29 +17,22 @@ describe('session store', () => {
     expect(s.route).toBe('home')
   })
 
-  it('setEffect updates one field', () => {
-    useSessionStore.getState().setEffect({ bitDepth: 4 })
-    expect(useSessionStore.getState().effects.bitDepth).toBe(4)
-    expect(useSessionStore.getState().effects.pitchSemitones).toBe(0)
-  })
-
-  it('setSource resets effects and trim to defaults derived from the source', () => {
-    useSessionStore.getState().setEffect({ bitDepth: 4 })
+  it('setSource resets chain and trim derived from the source', () => {
     useSessionStore.getState().setSource({
       id: 'a', blob: new Blob(), buffer: { numberOfChannels: 2, sampleRate: 48000, length: 96000, duration: 2 } as any,
       name: 'demo.wav', durationSec: 2, sampleRateHz: 48000, channels: 2,
     })
     const s = useSessionStore.getState()
-    expect(s.effects.bitDepth).toBe(16)
-    expect(s.effects.sampleRateHz).toBe(48000)
+    const srhold = s.chain.find(x => x.kind === 'srhold')!
+    expect((srhold as any).params.sampleRateHz).toBe(48000)
     expect(s.trim).toEqual({ startSec: 0, endSec: 2 })
   })
 
-  it('navigate changes route without disturbing effects', () => {
-    useSessionStore.getState().setEffect({ filterValue: 0.5 })
+  it('navigate changes route without disturbing chain', () => {
+    const lenBefore = useSessionStore.getState().chain.length
     useSessionStore.getState().navigate('effects')
     expect(useSessionStore.getState().route).toBe('effects')
-    expect(useSessionStore.getState().effects.filterValue).toBe(0.5)
+    expect(useSessionStore.getState().chain.length).toBe(lenBefore)
   })
 
   it('beginRender / finishRender / failRender transitions', () => {
@@ -68,25 +61,9 @@ describe('session store', () => {
     expect(useSessionStore.getState().srManuallyAdjusted).toBe(false)
   })
 
-  it('setEffect with sampleRateHz sets srManuallyAdjusted=true', () => {
-    useSessionStore.getState().setEffect({ sampleRateHz: 22050 })
-    expect(useSessionStore.getState().effects.sampleRateHz).toBe(22050)
-    expect(useSessionStore.getState().srManuallyAdjusted).toBe(true)
-  })
-
-  it('setEffect without sampleRateHz does NOT set srManuallyAdjusted', () => {
-    useSessionStore.getState().setEffect({ bitDepth: 12 })
-    expect(useSessionStore.getState().srManuallyAdjusted).toBe(false)
-  })
-
-  it('nudgeSampleRate sets sampleRateHz without setting srManuallyAdjusted', () => {
-    useSessionStore.getState().nudgeSampleRate(26000)
-    expect(useSessionStore.getState().effects.sampleRateHz).toBe(26000)
-    expect(useSessionStore.getState().srManuallyAdjusted).toBe(false)
-  })
-
   it('setSource resets srManuallyAdjusted to false', () => {
-    useSessionStore.getState().setEffect({ sampleRateHz: 22050 })
+    const srholdId = useSessionStore.getState().chain[1].id
+    useSessionStore.getState().setSlotParams(srholdId, { sampleRateHz: 22050 })
     expect(useSessionStore.getState().srManuallyAdjusted).toBe(true)
     useSessionStore.getState().setSource({
       id: 'c', blob: new Blob(),
@@ -96,11 +73,12 @@ describe('session store', () => {
     expect(useSessionStore.getState().srManuallyAdjusted).toBe(false)
   })
 
-  it('resetEffects clears srManuallyAdjusted and restores defaults', () => {
-    useSessionStore.getState().setEffect({ sampleRateHz: 18000, bitDepth: 12 })
+  it('resetChain clears srManuallyAdjusted and restores defaults', () => {
+    const srholdId = useSessionStore.getState().chain[1].id
+    useSessionStore.getState().setSlotParams(srholdId, { sampleRateHz: 18000 })
     expect(useSessionStore.getState().srManuallyAdjusted).toBe(true)
-    useSessionStore.getState().resetEffects()
-    expect(useSessionStore.getState().effects).toEqual(defaultEffects)
+    useSessionStore.getState().resetChain()
+    expect(useSessionStore.getState().chain.map(x => x.kind)).toEqual(['crusher', 'srhold', 'pitch', 'filter'])
     expect(useSessionStore.getState().srManuallyAdjusted).toBe(false)
   })
 })

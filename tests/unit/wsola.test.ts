@@ -13,6 +13,15 @@ function ramp(n: number): Float32Array {
   return out
 }
 
+// Build a minimal Chain with just a pitch slot — mirrors what engine.play sends.
+// Other slots (crusher, filter, etc.) live downstream of the player and don't
+// affect WSOLA-internal behavior, so we omit them in worklet-level tests.
+function chainWithPitch(speed: number, semitones: number) {
+  return [
+    { id: 'p', kind: 'pitch', enabled: true, params: { semitones, speed } },
+  ]
+}
+
 // Drive the processor with no audio inputs (it owns its buffer);
 // collect `blocks` blocks of 128 samples per channel.
 function drainBlocks(proc: WSOLAProcessor, channels: number, blocks: number): Float32Array[] {
@@ -47,7 +56,7 @@ describe('WSOLAProcessor', () => {
       type: 'play',
       offsetSec: 0,
       trim: { startSec: 0, endSec: 4096 / SR },
-      fx: { speed: 1, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
+      chain: chainWithPitch(1, 0),
     })
     const out = drainBlocks(proc, 1, 32) // 32 * 128 = 4096
     const skip = PRIMING_BLOCKS * BLOCK
@@ -65,7 +74,7 @@ describe('WSOLAProcessor — stretch', () => {
     postToProcessor(proc, {
       type: 'play', offsetSec: 0,
       trim: { startSec: 0, endSec: 4096 / SR },
-      fx: { speed: 0.5, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
+      chain: chainWithPitch(0.5, 0),
     })
     const out = drainBlocks(proc, 1, 64) // 8192 samples
     // Skip priming; assert RMS is sustained throughout.
@@ -83,7 +92,7 @@ describe('WSOLAProcessor — stretch', () => {
     postToProcessor(proc, {
       type: 'play', offsetSec: 0,
       trim: { startSec: 0, endSec: 4096 / SR },
-      fx: { speed: 2, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
+      chain: chainWithPitch(2, 0),
     })
     // At speed=2, 4096 input samples produce 2048 output before the loop wraps.
     // Drain enough that we observe at least one wrap; assert RMS is sustained.
@@ -109,7 +118,7 @@ describe('WSOLAProcessor — loop wrap', () => {
     postToProcessor(proc, {
       type: 'play', offsetSec: 0.4,
       trim: { startSec: 0.4, endSec: 0.6 },
-      fx: { speed: 1, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
+      chain: chainWithPitch(1, 0),
     })
     const out = drainBlocks(proc, 1, Math.ceil((9600 * 4) / BLOCK))
     const span = 9600
@@ -132,7 +141,7 @@ describe('WSOLAProcessor — control messages', () => {
     postToProcessor(proc, {
       type: 'play', offsetSec: 0,
       trim: { startSec: 0, endSec: 8192 / SR },
-      fx: { speed: 1, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
+      chain: chainWithPitch(1, 0),
     })
     drainBlocks(proc, 1, 4)
     postToProcessor(proc, { type: 'pause' })
@@ -142,19 +151,19 @@ describe('WSOLAProcessor — control messages', () => {
     }
   })
 
-  it('setFx({speed:1.5}) mid-process does not cause long zero runs', () => {
+  it('pitch({speed:1.5}) mid-process does not cause long zero runs', () => {
     const proc = new WSOLAProcessor()
     const input = sine(16384, 440, SR)
     postToProcessor(proc, { type: 'load', channels: [input], sampleRate: SR })
     postToProcessor(proc, {
       type: 'play', offsetSec: 0,
       trim: { startSec: 0, endSec: 16384 / SR },
-      fx: { speed: 1, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
+      chain: chainWithPitch(1, 0),
     })
     const phase1 = drainBlocks(proc, 1, 32)
     postToProcessor(proc, {
-      type: 'setFx',
-      fx: { speed: 1.5, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
+      type: 'pitch',
+      params: { speed: 1.5, semitones: 0 },
     })
     const phase2 = drainBlocks(proc, 1, 32)
     function maxZeroRun(buf: Float32Array): number {
@@ -176,7 +185,7 @@ describe('WSOLAProcessor — control messages', () => {
     postToProcessor(proc, {
       type: 'play', offsetSec: 0,
       trim: { startSec: 0, endSec: 1 },
-      fx: { speed: 0.7, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
+      chain: chainWithPitch(0.7, 0),
     })
     drainBlocks(proc, 1, 16)
     postToProcessor(proc, { type: 'seek', sourceTimeSec: 0.5 })
@@ -196,7 +205,7 @@ describe('WSOLAProcessor — pitch shift', () => {
     postToProcessor(proc, {
       type: 'play', offsetSec: 0,
       trim: { startSec: 0, endSec: 8192 / SR },
-      fx: { speed: 1, pitchSemitones: 12, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
+      chain: chainWithPitch(1, 12),
     })
     const out = drainBlocks(proc, 1, 64)
     const measured = dominantFreqHz(out[0].subarray(2048, 6144), SR)
@@ -211,7 +220,7 @@ describe('WSOLAProcessor — pitch shift', () => {
     postToProcessor(proc, {
       type: 'play', offsetSec: 0,
       trim: { startSec: 0, endSec: 4096 / SR },
-      fx: { speed: 0.5, pitchSemitones: 12, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
+      chain: chainWithPitch(0.5, 12),
     })
     const out = drainBlocks(proc, 1, 80)
     const measured = dominantFreqHz(out[0].subarray(2048, 6144), SR)
@@ -240,7 +249,7 @@ describe('WSOLAProcessor — position reporting', () => {
     postToProcessor(proc, {
       type: 'play', offsetSec: 0,
       trim: { startSec: 0, endSec: 1 },
-      fx: { speed: 1, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
+      chain: chainWithPitch(1, 0),
     })
     drainBlocks(proc, 1, 32)
     const positions = sent.filter((m) => m.type === 'position')
@@ -258,7 +267,7 @@ describe('WSOLAProcessor — position reporting', () => {
     postToProcessor(proc, {
       type: 'play', offsetSec: 0,
       trim: { startSec: 0, endSec: 1 },
-      fx: { speed: 1, pitchSemitones: 0, bitDepth: 16, sampleRateHz: SR, filterValue: 0 },
+      chain: chainWithPitch(1, 0),
     })
     drainBlocks(proc, 1, 8)
     sent.length = 0

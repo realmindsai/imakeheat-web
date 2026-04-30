@@ -2,7 +2,21 @@
 // ABOUTME: Exposes CRUD helpers, a change-event bus, and __resetForTests for vitest + fake-indexeddb.
 
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
-import type { EffectParams, TrimPoints } from '../audio/types'
+import type { TrimPoints } from '../audio/types'
+import type { Chain } from '../audio/effects/types'
+
+// Legacy EffectParams shape — kept locally because IndexedDB records written
+// by pre-pedalboard versions still carry it. New records (post-pedalboard
+// migration) won't write this — Task 5.3 lands a `chainConfig` field that
+// captures the slot-based chain instead. Defined inline here rather than
+// re-exported, so this is the only module that retains the legacy shape.
+export interface LegacyEffectParamsSnapshot {
+  bitDepth: 2 | 4 | 8 | 12 | 16
+  sampleRateHz: number
+  pitchSemitones: number
+  speed: number
+  filterValue: number
+}
 
 export interface ExportRecord {
   id: string
@@ -16,7 +30,14 @@ export interface ExportRecord {
   sampleRateHz: number
   kind: 'WAV'
   starred: boolean
-  fxSnapshot: EffectParams
+  // fxSnapshot is the legacy EffectParams snapshot. Kept optional so older
+  // records still round-trip cleanly through normalize().
+  fxSnapshot?: LegacyEffectParamsSnapshot
+  // chainConfig captures the slot-based effect chain at render time. Optional
+  // so records written by pre-pedalboard versions (which carry fxSnapshot
+  // instead) keep reading cleanly. New records written post-Task 5.3 always
+  // carry a deep-cloned snapshot here.
+  chainConfig?: Chain
   trimSnapshot: TrimPoints
 }
 
@@ -59,6 +80,7 @@ export function initExportsDb(): Promise<IDBPDatabase<ImaKeHeatDB>> {
 }
 
 function normalize(rec: ExportRecord): ExportRecord {
+  if (!rec.fxSnapshot) return rec
   if (rec.fxSnapshot.speed !== undefined) return rec
   // Records written before the speed field existed: backfill speed=1.
   // Guard above ensures we only reach here when speed is genuinely absent.

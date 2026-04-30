@@ -11,7 +11,7 @@ import { StatusDot } from '../components/StatusDot'
 import { PrimaryButton } from '../components/PrimaryButton'
 import { EffectsRack } from './EffectsRack'
 import { RenderModal } from '../components/RenderModal'
-import { useSessionStore, defaultEffects } from '../store/session'
+import { useSessionStore } from '../store/session'
 import { engine } from '../audio/engine'
 import { putExport } from '../store/exports'
 import { wavEncode } from '../audio/wav'
@@ -21,7 +21,7 @@ import { navigate } from '../lib/router'
 export function Effects() {
   const source = useSessionStore((s) => s.source)
   const trim = useSessionStore((s) => s.trim)
-  const fx = useSessionStore((s) => s.effects)
+  const chain = useSessionStore((s) => s.chain)
   const playing = useSessionStore((s) => s.playback.isPlaying)
   const [latencyMs, setLatencyMs] = useState(0)
   const [progress, setProgress] = useState(0)
@@ -68,14 +68,14 @@ export function Effects() {
       engine.pause()
       useSessionStore.getState().setPlayback({ isPlaying: false })
     } else {
-      await engine.play(trim, fx)
+      await engine.play(trim, chain)
       useSessionStore.getState().setPlayback({ isPlaying: true })
     }
   }
 
   const reset = () => {
-    useSessionStore.getState().resetEffects()
-    engine.setEffect(defaultEffects)
+    useSessionStore.getState().resetChain()
+    engine.rebuildChain(useSessionStore.getState().chain)
   }
 
   const setTrim = (startSec: number, endSec: number) => {
@@ -87,7 +87,7 @@ export function Effects() {
     if (!source) return
     useSessionStore.getState().beginRender()
     try {
-      const rendered = await engine.render(source.buffer, trim, fx)
+      const rendered = await engine.render(source.buffer, trim, chain)
       const blob = await wavEncode({
         numberOfChannels: rendered.numberOfChannels,
         sampleRate: rendered.sampleRate,
@@ -97,6 +97,10 @@ export function Effects() {
       const stem = source.name.replace(/\.[^.]+$/, '')
       const stamp = new Date().toISOString().slice(0, 16).replace(/[-T:]/g, '').replace(/(\d{8})(\d{4})/, '$1-$2')
       const name = `${stem}_crushed_${stamp}.wav`
+      // Deep-clone the chain so the persisted snapshot is decoupled from any
+      // future store mutations (toggles, reorders, param edits). Reading from
+      // getState() rather than the closure to capture the chain at render time.
+      const chainConfig = structuredClone(useSessionStore.getState().chain)
       await putExport({
         id: newId(),
         createdAt: Date.now(),
@@ -109,7 +113,8 @@ export function Effects() {
         sampleRateHz: rendered.sampleRate,
         kind: 'WAV',
         starred: false,
-        fxSnapshot: fx,
+        // fxSnapshot intentionally omitted — Task 5.3 captures chainConfig instead.
+        chainConfig,
         trimSnapshot: trim,
       })
       useSessionStore.getState().finishRender()

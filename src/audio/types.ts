@@ -1,13 +1,5 @@
 // ABOUTME: Shared types for AudioEngine, graph, recorder, and WAV codec.
-// ABOUTME: Single source of truth for EffectParams, TrimPoints, and AudioBufferLike.
-
-export interface EffectParams {
-  bitDepth: 2 | 4 | 8 | 12 | 16
-  sampleRateHz: number      // perceptual; 4000–48000
-  pitchSemitones: number    // -12..+12, decoupled from speed
-  speed: number             // 0.5..2.0, log-mapped on UI
-  filterValue: number       // -1..+1 (sign picks LP/HP, magnitude is intensity)
-}
+// ABOUTME: Single source of truth for TrimPoints and AudioBufferLike.
 
 export interface TrimPoints {
   startSec: number

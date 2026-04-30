@@ -1,100 +1,123 @@
-// ABOUTME: EffectsRack — five parameter panels for bit depth, sample rate, pitch, speed, and filter.
-// ABOUTME: Writes changes to session store and pushes to engine worklet in real time.
+// ABOUTME: EffectsRack — pedalboard slot list with dnd-kit reorder, +Add, Reset.
+// ABOUTME: Each slot renders inside a SlotCard with title, value label, toggle, and remove.
 
-import { Param } from '../components/Param'
-import { Slider } from '../components/Slider'
-import { Range } from '../components/Range'
-import { Eyebrow } from '../components/Eyebrow'
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable'
 import { useSessionStore } from '../store/session'
 import { engine } from '../audio/engine'
-import { sliderToSpeed, speedToSlider } from '../audio/speed'
+import { registry } from '../audio/effects/registry'
+import { SlotCard } from '../components/SlotCard'
+import { AddEffectMenu } from '../components/AddEffectMenu'
+import type { EffectKind, Slot } from '../audio/effects/types'
 
-const SP_TARGET_RATE_HZ = 24000
+function valueLabel(slot: Slot): string {
+  switch (slot.kind) {
+    case 'crusher':
+      return `${slot.params.bitDepth}-bit`
+    case 'srhold':
+      return `${slot.params.sampleRateHz} Hz`
+    case 'pitch':
+      return `${slot.params.semitones >= 0 ? '+' : ''}${slot.params.semitones.toFixed(0)} st  ${slot.params.speed.toFixed(2)}x`
+    case 'filter': {
+      const v = slot.params.value
+      if (Math.abs(v) < 0.05) return 'neutral'
+      return `${v < 0 ? 'LP' : 'HP'} ${Math.round(Math.abs(v) * 100)}%`
+    }
+    case 'echo':
+      return `mix ${slot.params.mix.toFixed(2)}`
+    case 'reverb':
+      return `mix ${slot.params.mix.toFixed(2)}`
+  }
+}
 
 export function EffectsRack() {
-  const fx = useSessionStore((s) => s.effects)
-  const srManuallyAdjusted = useSessionStore((s) => s.srManuallyAdjusted)
+  const chain = useSessionStore((s) => s.chain)
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  )
 
-  const update = (patch: Partial<typeof fx>) => {
-    useSessionStore.getState().setEffect(patch)
-    engine.setEffect({ ...fx, ...patch })
+  const onDragEnd = (e: DragEndEvent) => {
+    const { active, over } = e
+    if (!over || active.id === over.id) return
+    const newIndex = chain.findIndex((s) => s.id === over.id)
+    useSessionStore.getState().reorderSlot(String(active.id), newIndex)
+    engine.rebuildChain(useSessionStore.getState().chain)
   }
-
-  const selectBitDepth = (b: number) => {
-    const prev = fx.bitDepth
-    update({ bitDepth: b as typeof fx.bitDepth })
-    if (b === 12 && prev !== 12 && !srManuallyAdjusted) {
-      useSessionStore.getState().nudgeSampleRate(SP_TARGET_RATE_HZ)
-      engine.setEffect({ ...fx, bitDepth: 12, sampleRateHz: SP_TARGET_RATE_HZ })
-    }
-  }
-
-  const bitDepths = [2, 4, 8, 12, 16] as const
-
-  const srNorm = (fx.sampleRateHz - 4000) / (48000 - 4000)
-  const pitchNorm = (fx.pitchSemitones + 12) / 24
-  const filterNorm = (fx.filterValue + 1) / 2
 
   return (
     <div className="px-[22px] pt-[14px]">
-      <Eyebrow className="mb-[10px] !text-rmai-mut">effects rack</Eyebrow>
+      <div className="mb-2 flex items-center justify-between">
+        <span className="font-mono text-xs text-rmai-mut">effects rack</span>
+        <button
+          onClick={() => {
+            useSessionStore.getState().resetChain()
+            engine.rebuildChain(useSessionStore.getState().chain)
+          }}
+          className="font-mono text-xs text-rmai-mut"
+        >
+          Reset
+        </button>
+      </div>
 
-      <Param label="bit depth" sub="quantisation" value={`${fx.bitDepth}-bit`}>
-        <div className="mt-2 flex gap-1">
-          {bitDepths.map((b) => (
-            <button
-              key={b}
-              onClick={() => selectBitDepth(b)}
-              className={`flex-1 rounded-md py-[7px] font-mono text-[12px] font-semibold ${
-                fx.bitDepth === b
-                  ? 'border border-rmai-fg1 bg-rmai-fg1 text-white'
-                  : 'border border-rmai-border bg-white text-rmai-fg1'
-              }`}
-            >
-              {b}
-            </button>
-          ))}
-        </div>
-      </Param>
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+        <SortableContext items={chain.map((s) => s.id)} strategy={verticalListSortingStrategy}>
+          {chain.map((slot, i) => {
+            const def = registry.get(slot.kind)
+            if (!def) return null
+            const Panel = def.Panel
+            const defaultExpanded = slot.kind !== 'echo' && slot.kind !== 'reverb'
+            return (
+              <SlotCard
+                key={slot.id}
+                id={slot.id}
+                title={def.displayName}
+                valueLabel={valueLabel(slot)}
+                position={i + 1}
+                total={chain.length}
+                enabled={slot.enabled}
+                defaultExpanded={defaultExpanded}
+                onToggleEnabled={() => {
+                  useSessionStore.getState().toggleEnabled(slot.id)
+                  engine.rebuildChain(useSessionStore.getState().chain)
+                }}
+                onRemove={() => {
+                  useSessionStore.getState().removeSlot(slot.id)
+                  engine.rebuildChain(useSessionStore.getState().chain)
+                }}
+              >
+                <Panel
+                  slot={slot as never}
+                  onChange={(patch) => {
+                    useSessionStore.getState().setSlotParams(slot.id, patch as never)
+                    const updated = useSessionStore.getState().chain.find((s) => s.id === slot.id)
+                    if (updated) engine.updateSlotParams(slot.id, updated.params)
+                  }}
+                />
+              </SlotCard>
+            )
+          })}
+        </SortableContext>
+      </DndContext>
 
-      <Param label="sample rate" sub="downsample" value={`${fx.sampleRateHz} Hz`}>
-        <input type="range" min="4000" max="48000" step="100" value={fx.sampleRateHz}
-          onChange={(e) => update({ sampleRateHz: Number(e.target.value) })}
-          className="absolute inset-0 z-10 h-[22px] cursor-pointer opacity-0" />
-        <Slider value={srNorm} />
-        <Range left="4 k" right="48 k" />
-      </Param>
-
-      <Param label="pitch shift" sub="semitones" value={`${fx.pitchSemitones >= 0 ? '+' : ''}${fx.pitchSemitones.toFixed(0)} st`}>
-        <input type="range" min="-12" max="12" step="1" value={fx.pitchSemitones}
-          onChange={(e) => update({ pitchSemitones: Number(e.target.value) })}
-          className="absolute inset-0 z-10 h-[22px] cursor-pointer opacity-0" />
-        <Slider value={pitchNorm} neutralCenter />
-        <Range left="−12" right="+12" />
-      </Param>
-
-      <Param label="speed" sub="multiplier" value={`${fx.speed.toFixed(2)}x`}>
-        <input type="range" min="0" max="1" step="0.001"
-          value={speedToSlider(fx.speed)}
-          onChange={(e) => update({ speed: sliderToSpeed(Number(e.target.value)) })}
-          className="absolute inset-0 z-10 h-[22px] cursor-pointer opacity-0" />
-        <Slider value={speedToSlider(fx.speed)} neutralCenter />
-        <Range left="0.5×" right="2.0×" centerHint="1.0×" />
-      </Param>
-
-      <Param label="filter" sub="lo-pass / hi-pass"
-        value={
-          Math.abs(fx.filterValue) < 0.05
-            ? 'neutral'
-            : `${fx.filterValue < 0 ? 'LP' : 'HP'} ${Math.round(Math.abs(fx.filterValue) * 100)}%`
-        }
-      >
-        <input type="range" min="-1" max="1" step="0.01" value={fx.filterValue}
-          onChange={(e) => update({ filterValue: Number(e.target.value) })}
-          className="absolute inset-0 z-10 h-[22px] cursor-pointer opacity-0" />
-        <Slider value={filterNorm} neutralCenter />
-        <Range left="LP" right="HP" centerHint="neutral" />
-      </Param>
+      <AddEffectMenu
+        onAdd={(kind: EffectKind) => {
+          useSessionStore.getState().addSlot(kind)
+          engine.rebuildChain(useSessionStore.getState().chain)
+        }}
+      />
     </div>
   )
 }

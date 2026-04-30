@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import type { Chain } from '../../src/audio/effects/types'
 
 function makeSine(freq: number, amp: number, durSec: number, sr: number): number[] {
   const n = Math.floor(durSec * sr)
@@ -13,6 +14,15 @@ function rms(xs: number[]): number {
   return Math.sqrt(s / xs.length)
 }
 
+function neutralChain(bitDepth: 2 | 4 | 8 | 12 | 16, sampleRateHz: number): Chain {
+  return [
+    { id: 'c', kind: 'crusher', enabled: true, params: { bitDepth } },
+    { id: 's', kind: 'srhold',  enabled: true, params: { sampleRateHz } },
+    { id: 'p', kind: 'pitch',   enabled: true, params: { semitones: 0, speed: 1 } },
+    { id: 'f', kind: 'filter',  enabled: true, params: { value: 0 } },
+  ]
+}
+
 test('offline render at bitDepth=12 boosts a small-signal sine relative to bitDepth=16', async ({ page }) => {
   await page.goto('/tests/integration/index.html')
   await expect(page.locator('#status')).toHaveText('ready')
@@ -22,33 +32,28 @@ test('offline render at bitDepth=12 boosts a small-signal sine relative to bitDe
   const sig = makeSine(1000, 0.5, 0.5, sr)
   const inRms = rms(sig)
 
-  const baseEffects = {
-    bitDepth: 16 as const,
-    sampleRateHz: 48000,
-    pitchSemitones: 0,
-    speed: 1,
-    filterValue: 0,
-  }
+  const chain16 = neutralChain(16, 48000)
+  const chain12 = neutralChain(12, 48000)
 
-  const result16 = await page.evaluate(async ({ pcm, sr, effects }) => {
+  const result16 = await page.evaluate(async ({ pcm, sr, chain }) => {
     return await window.__run({
       kind: 'render',
       sourcePcm: [pcm],
       sampleRate: sr,
-      effects,
+      chain,
       trim: { startSec: 0, endSec: pcm.length / sr },
     })
-  }, { pcm: sig, sr, effects: baseEffects })
+  }, { pcm: sig, sr, chain: chain16 })
 
-  const result12 = await page.evaluate(async ({ pcm, sr, effects }) => {
+  const result12 = await page.evaluate(async ({ pcm, sr, chain }) => {
     return await window.__run({
       kind: 'render',
       sourcePcm: [pcm],
       sampleRate: sr,
-      effects: { ...effects, bitDepth: 12 },
+      chain,
       trim: { startSec: 0, endSec: pcm.length / sr },
     })
-  }, { pcm: sig, sr, effects: baseEffects })
+  }, { pcm: sig, sr, chain: chain12 })
 
   const out16Rms = rms(result16.pcm[0])
   const out12Rms = rms(result12.pcm[0])
