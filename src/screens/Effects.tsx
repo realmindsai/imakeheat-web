@@ -76,6 +76,11 @@ export function Effects() {
   const reset = () => {
     useSessionStore.getState().resetChain()
     engine.rebuildChain(useSessionStore.getState().chain)
+    if (source) {
+      const fullTrim = { startSec: 0, endSec: source.durationSec }
+      useSessionStore.getState().setTrim(fullTrim)
+      void engine.setTrim(fullTrim)
+    }
   }
 
   const setTrim = (startSec: number, endSec: number) => {
@@ -168,7 +173,7 @@ export function Effects() {
               · {(trim.endSec - trim.startSec).toFixed(2)}s
             </span>
           </div>
-          <div className="h-[64px]">
+          <div className="relative h-[64px] overflow-hidden">
             <TrimWaveform
               durationSec={source.durationSec}
               startSec={trim.startSec}
