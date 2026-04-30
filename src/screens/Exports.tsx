@@ -102,6 +102,13 @@ export function Exports() {
             onShare={() => { void sharePlanWavBlob(rec.blob, rec.name) }}
             onDelete={() => { void deleteExport(rec.id) }}
             onStar={() => { void toggleStarred(rec.id) }}
+            onRestore={rec.chainConfig ? () => {
+              // Restore is chain-only — rec.blob is left alone so the user's
+              // current source stays loaded. setChain regenerates slot ids.
+              useSessionStore.getState().setChain(rec.chainConfig!)
+              engine.rebuildChain(useSessionStore.getState().chain)
+              navigate('effects')
+            } : undefined}
           />
         ))}
       </div>
@@ -110,7 +117,7 @@ export function Exports() {
 }
 
 function ExportRow({
-  rec, playing, onPlay, onShare, onDelete, onStar,
+  rec, playing, onPlay, onShare, onDelete, onStar, onRestore,
 }: {
   rec: ExportRecord
   playing: boolean
@@ -118,6 +125,7 @@ function ExportRow({
   onShare: () => void
   onDelete: () => void
   onStar: () => void
+  onRestore?: () => void
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const longPressTimer = useRef<number | null>(null)
@@ -157,6 +165,14 @@ function ExportRow({
         className="flex h-8 w-8 items-center justify-center rounded-full border border-rmai-border bg-white">
         {playing ? Icon.pause(13) : Icon.play(13)}
       </button>
+      {onRestore && (
+        <button
+          onClick={onRestore}
+          className="rounded-full border border-rmai-border bg-white px-[10px] py-[6px] font-mono text-[11px] font-semibold text-rmai-fg1"
+        >
+          Restore
+        </button>
+      )}
       <button onClick={onShare} className="flex h-8 w-8 items-center justify-center rounded-full text-rmai-mut">
         {Icon.share(14)}
       </button>
