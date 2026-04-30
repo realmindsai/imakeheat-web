@@ -9,7 +9,7 @@ import { useSessionStore } from '../store/session'
 import { engine } from '../audio/engine'
 import { sliderToSpeed, speedToSlider } from '../audio/speed'
 
-const SP_TARGET_RATE_HZ = 26000
+const SP_TARGET_RATE_HZ = 24000
 
 export function EffectsRack() {
   const fx = useSessionStore((s) => s.effects)

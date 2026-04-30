@@ -15,7 +15,7 @@ async function loadFixtureAndOpenEffects(page: import('@playwright/test').Page) 
   await expect(page.getByText('effects rack')).toBeVisible()
 }
 
-test('first tap on 12 nudges sample-rate display toward 26 kHz', async ({ page }) => {
+test('first tap on 12 nudges sample-rate display toward 24 kHz', async ({ page }) => {
   await loadFixtureAndOpenEffects(page)
 
   // Sample-rate panel value initially shows the source rate (48000 Hz — fixture is 44100 Hz
@@ -25,8 +25,8 @@ test('first tap on 12 nudges sample-rate display toward 26 kHz', async ({ page }
   // Tap the "12" button.
   await page.getByRole('button', { name: '12', exact: true }).click()
 
-  // Sample-rate display should now read 26000 Hz.
-  await expect(page.getByText('26000 Hz')).toBeVisible()
+  // Sample-rate display should now read 24000 Hz.
+  await expect(page.getByText('24000 Hz')).toBeVisible()
   await expect(page.getByText('12-bit')).toBeVisible()
 })
 

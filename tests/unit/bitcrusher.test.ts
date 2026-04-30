@@ -90,12 +90,12 @@ describe('BitCrusherProcessor', () => {
     const out12 = runProcessor(proc12, [sig])
     const out12Rms = Math.sqrt(out12[0].reduce((s, v) => s + v * v, 0) / n)
 
-    // +2 dB linear gain ≈ ×1.259, but tanh compresses even moderate signals,
-    // so the realized RMS gain is below the linear ceiling. Empirically ≈ ×1.149.
+    // +6 dB linear gain ≈ ×1.995, but tanh compresses even moderate signals,
+    // so the realized RMS gain sits below the linear ceiling. Empirically ≈ ×1.625.
     // Lower bound proves the saturator is engaged; upper bound proves it's tanh
     // (not just linear gain) and that quantization didn't blow up.
-    expect(out12Rms / inRms).toBeGreaterThan(1.10)
-    expect(out12Rms / inRms).toBeLessThan(1.20)
+    expect(out12Rms / inRms).toBeGreaterThan(1.58)
+    expect(out12Rms / inRms).toBeLessThan(1.68)
   })
 
   it('at bits=8, the same small-signal sine is NOT pushed louder (saturator stays off)', () => {
@@ -116,10 +116,13 @@ describe('BitCrusherProcessor', () => {
     expect(Math.abs(out8Rms / inRms - 1)).toBeLessThan(0.02)
   })
 
-  it('at bits=12, hot input is soft-clipped (peaks below 1.0 with no rail-pinning)', () => {
-    // A +6 dBFS sine into tanh(1.26 * x) saturates well below ±1.
-    // Hard clip would pin to the 12-bit lattice edges (±~0.9995). Soft clip
-    // peaks should sit clearly inside that.
+  it('at bits=12, hot input is soft-clipped to the 12-bit ceiling (tanh saturates, then quantizer pins)', () => {
+    // A +6 dBFS sine into tanh(1.995 * x) saturates close to ±1.
+    // tanh(1.995 * 2) = tanh(3.99) ≈ 0.9993, which the 12-bit quantizer rounds
+    // up to the positive rail at 2047/2048 ≈ 0.99951. So with +6 dB drive the
+    // hot input does land on the lattice ceiling — that's the point: tanh is
+    // pre-quantize, so it's the small-signal/mid-signal shape that matters,
+    // and at very hot input the quantizer takes over.
     const n = 4096
     const sr = 48000
     const f = 1000
@@ -130,8 +133,8 @@ describe('BitCrusherProcessor', () => {
     postToProcessor(proc, { bits: 12 })
     const out = runProcessor(proc, [sig])
     const peak = Math.max(...Array.from(out[0]).map((v) => Math.abs(v)))
-    // tanh(1.26 * 2) = tanh(2.52) ≈ 0.987 — soft-clipped well inside the 12-bit rails.
-    expect(peak).toBeLessThan(0.99)
-    expect(peak).toBeGreaterThan(0.95)
+    // Empirically peak = 2047/2048 = 0.99951171875 (the 12-bit positive rail).
+    expect(peak).toBeGreaterThan(0.998)
+    expect(peak).toBeLessThanOrEqual(2047 / 2048 + 1e-9)
   })
 })

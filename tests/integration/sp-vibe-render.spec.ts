@@ -56,9 +56,9 @@ test('offline render at bitDepth=12 boosts a small-signal sine relative to bitDe
   // 16-bit path is essentially identity; RMS ~= input.
   expect(Math.abs(out16Rms / inRms - 1)).toBeLessThan(0.05)
 
-  // 12-bit path: +2 dB pre-quantize drive → RMS ratio noticeably above 1.
+  // 12-bit path: +6 dB pre-quantize drive → RMS ratio noticeably above 1.
   // WSOLA + offline rendering introduces some envelope smearing, so we use a
-  // looser tolerance than the unit test.
-  expect(out12Rms / inRms).toBeGreaterThan(1.10)
-  expect(out12Rms / inRms).toBeLessThan(1.40)
+  // looser tolerance than the unit test. Empirically ≈ ×1.625.
+  expect(out12Rms / inRms).toBeGreaterThan(1.55)
+  expect(out12Rms / inRms).toBeLessThan(1.70)
 })

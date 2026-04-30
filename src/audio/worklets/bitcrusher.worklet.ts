@@ -4,7 +4,7 @@ import './processor-shim'
 // Drive sits BEFORE the quantizer so the nonlinearity shapes what gets
 // rounded — that's the bit that gives drums the "hit" people associate
 // with the SP. Other bit depths are untouched.
-const SP_DRIVE = 1.2589254117941673 // +2 dB
+const SP_DRIVE = 1.9952623149688795 // +6 dB
 
 export class BitCrusherProcessor extends AudioWorkletProcessor {
   private bits = 16
