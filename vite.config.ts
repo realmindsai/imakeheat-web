@@ -34,4 +34,10 @@ export default defineConfig({
     }),
   ],
   server: { port: 5173 },
+  optimizeDeps: {
+    // Pre-bundle so the dev server doesn't reload mid-test the first time
+    // a worklet imports it. Without this, Playwright integration tests on a
+    // cold cache race a Vite "deps changed → reloading" page refresh.
+    include: ['soundtouchjs'],
+  },
 })
