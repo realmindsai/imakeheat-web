@@ -97,6 +97,10 @@ export function Effects() {
       const stem = source.name.replace(/\.[^.]+$/, '')
       const stamp = new Date().toISOString().slice(0, 16).replace(/[-T:]/g, '').replace(/(\d{8})(\d{4})/, '$1-$2')
       const name = `${stem}_crushed_${stamp}.wav`
+      // Deep-clone the chain so the persisted snapshot is decoupled from any
+      // future store mutations (toggles, reorders, param edits). Reading from
+      // getState() rather than the closure to capture the chain at render time.
+      const chainConfig = structuredClone(useSessionStore.getState().chain)
       await putExport({
         id: newId(),
         createdAt: Date.now(),
@@ -109,7 +113,8 @@ export function Effects() {
         sampleRateHz: rendered.sampleRate,
         kind: 'WAV',
         starred: false,
-        // fxSnapshot intentionally omitted — Task 5.3 introduces chainConfig.
+        // fxSnapshot intentionally omitted — Task 5.3 captures chainConfig instead.
+        chainConfig,
         trimSnapshot: trim,
       })
       useSessionStore.getState().finishRender()

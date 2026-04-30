@@ -3,6 +3,7 @@
 
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { TrimPoints } from '../audio/types'
+import type { Chain } from '../audio/effects/types'
 
 // Legacy EffectParams shape — kept locally because IndexedDB records written
 // by pre-pedalboard versions still carry it. New records (post-pedalboard
@@ -32,6 +33,11 @@ export interface ExportRecord {
   // fxSnapshot is the legacy EffectParams snapshot. Kept optional so older
   // records still round-trip cleanly through normalize().
   fxSnapshot?: LegacyEffectParamsSnapshot
+  // chainConfig captures the slot-based effect chain at render time. Optional
+  // so records written by pre-pedalboard versions (which carry fxSnapshot
+  // instead) keep reading cleanly. New records written post-Task 5.3 always
+  // carry a deep-cloned snapshot here.
+  chainConfig?: Chain
   trimSnapshot: TrimPoints
 }
 
