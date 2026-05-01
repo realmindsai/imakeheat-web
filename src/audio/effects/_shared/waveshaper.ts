@@ -1,8 +1,8 @@
 // ABOUTME: Shared waveshaper helpers for drive-style effects in the pedalboard.
 // ABOUTME: Provides a stable soft-clip curve and output trim mapping from a 0..1 drive amount.
 
-export function makeSoftClipCurve(amount: number): Float32Array {
-  const curve = new Float32Array(2048)
+export function makeSoftClipCurve(amount: number): Float32Array<ArrayBuffer> {
+  const curve = new Float32Array(2048) as Float32Array<ArrayBuffer>
   const k = Math.max(0, amount)
   const scale = 1 + k * 3
   const norm = Math.tanh(scale)
