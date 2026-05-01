@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { registry } from '../../../src/audio/effects/registry'
 
 describe('effect registry', () => {
-  it('exposes all thirteen effect kinds after Compressor lands', () => {
+  it('exposes all fourteen effect kinds after Lo-fi lands', () => {
     const kinds = Array.from(registry.keys()).sort()
     expect(kinds).toEqual([
       'cassette',
@@ -13,6 +13,7 @@ describe('effect registry', () => {
       'filter',
       'filterDrive',
       'isolator',
+      'loFi',
       'pitch',
       'reverb',
       'srhold',

@@ -74,6 +74,25 @@ describe('chain store', () => {
     })
     expect(c[c.length - 1].id).toMatch(/^[0-9a-f-]{36}$/)
   })
+  it('addSlot appends Lo-fi with dry-bypass defaults and a fresh id', () => {
+    const before = useSessionStore.getState().chain.length
+    useSessionStore.getState().addSlot('loFi')
+    const c = useSessionStore.getState().chain
+    expect(c.length).toBe(before + 1)
+    expect(c[c.length - 1]).toMatchObject({
+      kind: 'loFi',
+      enabled: true,
+      params: {
+        preFilt: 1,
+        lofiType: 1,
+        tone: 0,
+        cutoffHz: 8000,
+        balance: 0,
+        level: 100,
+      },
+    })
+    expect(c[c.length - 1].id).toMatch(/^[0-9a-f-]{36}$/)
+  })
   it('addSlot appends 303 VinylSim with neutral defaults and a fresh id', () => {
     const before = useSessionStore.getState().chain.length
     useSessionStore.getState().addSlot('vinyl303')

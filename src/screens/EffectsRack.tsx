@@ -53,7 +53,7 @@ function valueLabel(slot: Slot): string {
     case 'compressor':
       return `sus ${slot.params.sustain}`
     case 'loFi':
-      return ''
+      return `type ${slot.params.lofiType}`
     case 'echo':
       return `mix ${slot.params.mix.toFixed(2)}`
     case 'reverb':

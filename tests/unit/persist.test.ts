@@ -72,6 +72,25 @@ describe('chain persistence', () => {
     })
   })
 
+  it('addSlot writes Lo-fi to localStorage with dry-bypass defaults', () => {
+    useSessionStore.getState().addSlot('loFi')
+    const chain = useSessionStore.getState().chain
+    const persisted = JSON.parse(localStorage.getItem('imakeheat-chain') ?? '{}')
+    expect(persisted.state.chain).toEqual(chain)
+    expect(persisted.state.chain.at(-1)).toMatchObject({
+      kind: 'loFi',
+      enabled: true,
+      params: {
+        preFilt: 1,
+        lofiType: 1,
+        tone: 0,
+        cutoffHz: 8000,
+        balance: 0,
+        level: 100,
+      },
+    })
+  })
+
   it('persisted chain round-trips a 303 VinylSim slot', () => {
     useSessionStore.getState().addSlot('vinyl303')
     const chain = useSessionStore.getState().chain

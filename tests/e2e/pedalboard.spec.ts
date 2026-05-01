@@ -89,6 +89,70 @@ test('+Add Cassette Sim shows its labeled controls', async ({ page }) => {
   await expect(group.getByText('Catch', { exact: true })).toBeVisible()
 })
 
+test('+Add Isolator shows Low Mid High controls', async ({ page }) => {
+  await gotoEffects(page)
+  await page.getByRole('button', { name: '+ Add effect' }).click()
+  await page.getByRole('menuitem', { name: 'Isolator' }).click()
+
+  const group = page.getByRole('group', { name: /Isolator, position 5 of 5/ })
+  await expect(group.getByText('Low')).toBeVisible()
+  await expect(group.getByText('Mid')).toBeVisible()
+  await expect(group.getByText('High')).toBeVisible()
+})
+
+test('+Add Equalizer shows gain and frequency controls', async ({ page }) => {
+  await gotoEffects(page)
+  await page.getByRole('button', { name: '+ Add effect' }).click()
+  await page.getByRole('menuitem', { name: 'Equalizer' }).click()
+
+  const group = page.getByRole('group', { name: /Equalizer, position 5 of 5/ })
+  await expect(group.getByText('Low gain')).toBeVisible()
+  await expect(group.getByText('Mid gain')).toBeVisible()
+  await expect(group.getByText('High gain')).toBeVisible()
+  await expect(group.getByText('Low freq')).toBeVisible()
+  await expect(group.getByText('Mid freq')).toBeVisible()
+  await expect(group.getByText('High freq')).toBeVisible()
+})
+
+test('+Add Filter+Drive shows filter and drive controls', async ({ page }) => {
+  await gotoEffects(page)
+  await page.getByRole('button', { name: '+ Add effect' }).click()
+  await page.getByRole('menuitem', { name: 'Filter+Drive' }).click()
+
+  const group = page.getByRole('group', { name: /Filter\+Drive, position 5 of 5/ })
+  await expect(group.getByText('Cutoff')).toBeVisible()
+  await expect(group.getByText('Resonance')).toBeVisible()
+  await expect(group.getByText('Drive', { exact: true })).toBeVisible()
+  await expect(group.getByText('Low freq')).toBeVisible()
+  await expect(group.getByText('Low gain')).toBeVisible()
+})
+
+test('+Add Compressor shows sustain attack ratio level controls', async ({ page }) => {
+  await gotoEffects(page)
+  await page.getByRole('button', { name: '+ Add effect' }).click()
+  await page.getByRole('menuitem', { name: 'Compressor' }).click()
+
+  const group = page.getByRole('group', { name: /Compressor, position 5 of 5/ })
+  await expect(group.getByText('Sustain')).toBeVisible()
+  await expect(group.getByText('Attack')).toBeVisible()
+  await expect(group.getByText('Ratio')).toBeVisible()
+  await expect(group.getByText('Level')).toBeVisible()
+})
+
+test('+Add Lo-fi shows all six controls', async ({ page }) => {
+  await gotoEffects(page)
+  await page.getByRole('button', { name: '+ Add effect' }).click()
+  await page.getByRole('menuitem', { name: 'Lo-fi' }).click()
+
+  const group = page.getByRole('group', { name: /Lo-fi, position 5 of 5/ })
+  await expect(group.getByText('Pre filt')).toBeVisible()
+  await expect(group.getByText('Lo-fi type')).toBeVisible()
+  await expect(group.getByText('Tone')).toBeVisible()
+  await expect(group.getByText('Cutoff')).toBeVisible()
+  await expect(group.getByText('Balance')).toBeVisible()
+  await expect(group.getByText('Level')).toBeVisible()
+})
+
 test('× removes a slot', async ({ page }) => {
   await gotoEffects(page)
   await page.getByRole('button', { name: '+ Add effect' }).click()
