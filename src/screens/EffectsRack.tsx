@@ -58,6 +58,16 @@ function valueLabel(slot: Slot): string {
       return `mix ${slot.params.mix.toFixed(2)}`
     case 'reverb':
       return `mix ${slot.params.mix.toFixed(2)}`
+    case 'timeCtrlDly':
+      return `mix ${slot.params.mix.toFixed(2)}`
+    case 'tapeEcho':
+      return `mix ${slot.params.mix.toFixed(2)}`
+    case 'overdrive':
+      return `drive ${slot.params.drive.toFixed(2)}`
+    case 'distortion':
+      return `drive ${slot.params.drive.toFixed(2)}`
+    case 'wrmSaturator':
+      return `amt ${slot.params.amount.toFixed(2)}`
     case 'vinyl303':
       return `comp ${slot.params.comp}`
     case 'vinyl404':

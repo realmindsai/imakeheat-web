@@ -2,23 +2,28 @@ import { describe, it, expect } from 'vitest'
 import { registry } from '../../../src/audio/effects/registry'
 
 describe('effect registry', () => {
-  it('exposes all fourteen effect kinds after Lo-fi lands', () => {
+  it('exposes all phase1 and phase2 effect kinds', () => {
     const kinds = Array.from(registry.keys()).sort()
     expect(kinds).toEqual([
       'cassette',
       'compressor',
       'crusher',
+      'distortion',
       'echo',
       'equalizer',
       'filter',
       'filterDrive',
       'isolator',
       'loFi',
+      'overdrive',
       'pitch',
       'reverb',
       'srhold',
+      'tapeEcho',
+      'timeCtrlDly',
       'vinyl303',
       'vinyl404',
+      'wrmSaturator',
     ])
   })
   it('every definition has the required shape', () => {

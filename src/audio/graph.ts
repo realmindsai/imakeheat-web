@@ -10,6 +10,8 @@ import srholdUrl from './worklets/srhold.worklet.ts?worker&url'
 import wsolaUrl from './worklets/wsola.worklet.ts?worker&url'
 import echoUrl from './worklets/echo.worklet.ts?worker&url'
 import reverbUrl from './worklets/reverb.worklet.ts?worker&url'
+import tapeEchoUrl from './worklets/tapeEcho.worklet.ts?worker&url'
+import timeCtrlDlyUrl from './worklets/timeCtrlDly.worklet.ts?worker&url'
 import vinyl303Url from './worklets/vinyl303.worklet.ts?worker&url'
 import vinyl404Url from './worklets/vinyl404.worklet.ts?worker&url'
 import cassetteUrl from './worklets/cassette.worklet.ts?worker&url'
@@ -20,6 +22,8 @@ export async function loadWorklets(ctx: BaseAudioContext): Promise<void> {
   await ctx.audioWorklet.addModule(wsolaUrl)
   await ctx.audioWorklet.addModule(echoUrl)
   await ctx.audioWorklet.addModule(reverbUrl)
+  await ctx.audioWorklet.addModule(tapeEchoUrl)
+  await ctx.audioWorklet.addModule(timeCtrlDlyUrl)
   await ctx.audioWorklet.addModule(vinyl303Url)
   await ctx.audioWorklet.addModule(vinyl404Url)
   await ctx.audioWorklet.addModule(cassetteUrl)
@@ -45,7 +49,12 @@ export async function renderOffline(
   // to the OfflineAudioContext so the wet tail is captured rather than
   // truncated at audio EOF. Worklets keep producing output as zero-input runs.
   const needsTail = chain.some((s) => {
-    if (!s.enabled || (s.kind !== 'echo' && s.kind !== 'reverb')) return false
+    const hasTailKind =
+      s.kind === 'echo'
+      || s.kind === 'reverb'
+      || s.kind === 'timeCtrlDly'
+      || s.kind === 'tapeEcho'
+    if (!s.enabled || !hasTailKind) return false
     const def = registry.get(s.kind)
     if (!def) return false
     return !def.isNeutral(s.params as never)

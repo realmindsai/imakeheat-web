@@ -17,7 +17,6 @@ describe('AddEffectMenu', () => {
     expect(getByRole('menu')).toBeTruthy()
     const items = getAllByRole('menuitem')
     expect(items.length).toBe(registry.size)
-    expect(items.length).toBe(14)
     const names = items.map((el) => el.textContent)
     expect(names).toContain('Cassette Sim')
     expect(names).toContain('Equalizer')

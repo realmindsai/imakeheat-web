@@ -7,6 +7,7 @@ export type EffectKind =
   | 'crusher' | 'srhold' | 'pitch' | 'filter'
   | 'isolator' | 'equalizer' | 'filterDrive' | 'compressor' | 'loFi'
   | 'echo' | 'reverb' | 'vinyl303' | 'vinyl404' | 'cassette'
+  | 'timeCtrlDly' | 'tapeEcho' | 'overdrive' | 'distortion' | 'wrmSaturator'
 
 export interface SlotBase {
   id: string
@@ -63,6 +64,11 @@ export type Slot =
       }
     })
   | (SlotBase & { kind: 'echo';    params: { timeMs: number; feedback: number; mix: number } })
+  | (SlotBase & { kind: 'timeCtrlDly'; params: { timeMs: number; feedback: number; mix: number; ducking: number } })
+  | (SlotBase & { kind: 'tapeEcho'; params: { timeMs: number; feedback: number; mix: number; wowFlutter: number; tone: number } })
+  | (SlotBase & { kind: 'overdrive'; params: { drive: number; tone: number; level: number; mix: number } })
+  | (SlotBase & { kind: 'distortion'; params: { drive: number; tone: number; level: number; mix: number } })
+  | (SlotBase & { kind: 'wrmSaturator'; params: { amount: number; bias: number; tone: number; mix: number; level: number } })
   | (SlotBase & { kind: 'reverb';  params: { size: number; decay: number; mix: number } })
   | (SlotBase & { kind: 'vinyl303'; params: { comp: number; noise: number; wowFlutter: number; level: number } })
   | (SlotBase & { kind: 'vinyl404'; params: { frequency: number; noise: number; wowFlutter: number } })

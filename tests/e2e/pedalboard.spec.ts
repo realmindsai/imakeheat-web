@@ -29,7 +29,7 @@ test('rack shows 4 default slots in v1 order', async ({ page }) => {
 test('+Add Echo appends a 5th slot, default-collapsed', async ({ page }) => {
   await gotoEffects(page)
   await page.getByRole('button', { name: '+ Add effect' }).click()
-  await page.getByRole('menuitem', { name: 'Echo' }).click()
+  await page.getByRole('menuitem', { name: 'Echo', exact: true }).click()
 
   await expect(page.getByRole('group', { name: /Echo, position 5 of 5/ })).toBeVisible()
   // Echo defaults collapsed
@@ -38,6 +38,26 @@ test('+Add Echo appends a 5th slot, default-collapsed', async ({ page }) => {
   // Existing slots updated to "of 5"
   await expect(page.getByRole('group', { name: /Crusher, position 1 of 5/ })).toBeVisible()
   await expect(page.getByRole('group', { name: /Filter, position 4 of 5/ })).toBeVisible()
+})
+
+test('+Add TimeCtrlDly toggle and remove lifecycle works', async ({ page }) => {
+  await gotoEffects(page)
+  await page.getByRole('button', { name: '+ Add effect' }).click()
+  await page.getByRole('menuitem', { name: 'TimeCtrlDly' }).click()
+
+  const group = page.getByRole('group', { name: /TimeCtrlDly, position 5 of 5/ })
+  await expect(group).toBeVisible()
+
+  const disable = page.getByRole('button', { name: 'Disable TimeCtrlDly' })
+  await expect(disable).toHaveAttribute('aria-pressed', 'true')
+  await disable.click()
+  await expect(page.getByRole('button', { name: 'Enable TimeCtrlDly' })).toHaveAttribute(
+    'aria-pressed',
+    'false',
+  )
+
+  await page.getByRole('button', { name: 'Remove TimeCtrlDly' }).click()
+  await expect(page.getByRole('group', { name: /TimeCtrlDly/ })).toHaveCount(0)
 })
 
 test('+Add 303 VinylSim shows its labeled controls', async ({ page }) => {
@@ -156,7 +176,7 @@ test('+Add Lo-fi shows all six controls', async ({ page }) => {
 test('× removes a slot', async ({ page }) => {
   await gotoEffects(page)
   await page.getByRole('button', { name: '+ Add effect' }).click()
-  await page.getByRole('menuitem', { name: 'Echo' }).click()
+  await page.getByRole('menuitem', { name: 'Echo', exact: true }).click()
   await expect(page.getByRole('group', { name: /Echo, position 5 of 5/ })).toBeVisible()
 
   await page.getByRole('button', { name: 'Remove Echo' }).click()
@@ -186,7 +206,7 @@ test('eyeball toggles enabled', async ({ page }) => {
 test('expand/collapse caret on echo', async ({ page }) => {
   await gotoEffects(page)
   await page.getByRole('button', { name: '+ Add effect' }).click()
-  await page.getByRole('menuitem', { name: 'Echo' }).click()
+  await page.getByRole('menuitem', { name: 'Echo', exact: true }).click()
 
   // Echo starts collapsed — its panel content (e.g., the 50 ms / 1000 ms range labels) is not present
   const echoGroup = page.getByRole('group', { name: /Echo, position 5 of 5/ })
@@ -209,7 +229,7 @@ test('expand/collapse caret on echo', async ({ page }) => {
 test('Reset returns to v1 default chain', async ({ page }) => {
   await gotoEffects(page)
   await page.getByRole('button', { name: '+ Add effect' }).click()
-  await page.getByRole('menuitem', { name: 'Echo' }).click()
+  await page.getByRole('menuitem', { name: 'Echo', exact: true }).click()
   await expect(page.getByRole('group')).toHaveCount(5)
 
   // The rack's Reset is the small font-mono text-xs button next to "effects rack".
