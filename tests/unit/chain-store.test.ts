@@ -43,6 +43,25 @@ describe('chain store', () => {
     })
     expect(c[c.length - 1].id).toMatch(/^[0-9a-f-]{36}$/)
   })
+  it('addSlot appends Filter+Drive with conservative defaults and a fresh id', () => {
+    const before = useSessionStore.getState().chain.length
+    useSessionStore.getState().addSlot('filterDrive')
+    const c = useSessionStore.getState().chain
+    expect(c.length).toBe(before + 1)
+    expect(c[c.length - 1]).toMatchObject({
+      kind: 'filterDrive',
+      enabled: true,
+      params: {
+        cutoffHz: 16000,
+        resonance: 0,
+        drive: 0,
+        filterType: 'lowpass',
+        lowFreq: 200,
+        lowGain: 0,
+      },
+    })
+    expect(c[c.length - 1].id).toMatch(/^[0-9a-f-]{36}$/)
+  })
   it('addSlot appends 303 VinylSim with neutral defaults and a fresh id', () => {
     const before = useSessionStore.getState().chain.length
     useSessionStore.getState().addSlot('vinyl303')

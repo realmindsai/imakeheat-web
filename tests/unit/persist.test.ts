@@ -41,6 +41,25 @@ describe('chain persistence', () => {
     })
   })
 
+  it('addSlot writes Filter+Drive to localStorage with conservative defaults', () => {
+    useSessionStore.getState().addSlot('filterDrive')
+    const chain = useSessionStore.getState().chain
+    const persisted = JSON.parse(localStorage.getItem('imakeheat-chain') ?? '{}')
+    expect(persisted.state.chain).toEqual(chain)
+    expect(persisted.state.chain.at(-1)).toMatchObject({
+      kind: 'filterDrive',
+      enabled: true,
+      params: {
+        cutoffHz: 16000,
+        resonance: 0,
+        drive: 0,
+        filterType: 'lowpass',
+        lowFreq: 200,
+        lowGain: 0,
+      },
+    })
+  })
+
   it('persisted chain round-trips a 303 VinylSim slot', () => {
     useSessionStore.getState().addSlot('vinyl303')
     const chain = useSessionStore.getState().chain

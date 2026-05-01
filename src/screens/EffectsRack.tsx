@@ -47,6 +47,9 @@ function valueLabel(slot: Slot): string {
       }
       return `mid ${slot.params.midGain} dB`
     case 'filterDrive':
+      return slot.params.drive === 0
+        ? `cut ${slot.params.cutoffHz}`
+        : `drive ${slot.params.drive}`
     case 'compressor':
     case 'loFi':
       return ''
