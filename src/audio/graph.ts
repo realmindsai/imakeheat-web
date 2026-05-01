@@ -49,7 +49,12 @@ export async function renderOffline(
   // to the OfflineAudioContext so the wet tail is captured rather than
   // truncated at audio EOF. Worklets keep producing output as zero-input runs.
   const needsTail = chain.some((s) => {
-    if (!s.enabled || (s.kind !== 'echo' && s.kind !== 'reverb')) return false
+    const hasTailKind =
+      s.kind === 'echo'
+      || s.kind === 'reverb'
+      || s.kind === 'timeCtrlDly'
+      || s.kind === 'tapeEcho'
+    if (!s.enabled || !hasTailKind) return false
     const def = registry.get(s.kind)
     if (!def) return false
     return !def.isNeutral(s.params as never)
