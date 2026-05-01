@@ -2,10 +2,11 @@ import { describe, it, expect } from 'vitest'
 import { registry } from '../../../src/audio/effects/registry'
 
 describe('effect registry', () => {
-  it('exposes all twelve effect kinds after Filter+Drive lands', () => {
+  it('exposes all thirteen effect kinds after Compressor lands', () => {
     const kinds = Array.from(registry.keys()).sort()
     expect(kinds).toEqual([
       'cassette',
+      'compressor',
       'crusher',
       'echo',
       'equalizer',

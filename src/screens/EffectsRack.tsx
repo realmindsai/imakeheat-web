@@ -51,6 +51,7 @@ function valueLabel(slot: Slot): string {
         ? `cut ${slot.params.cutoffHz}`
         : `drive ${slot.params.drive}`
     case 'compressor':
+      return `sus ${slot.params.sustain}`
     case 'loFi':
       return ''
     case 'echo':

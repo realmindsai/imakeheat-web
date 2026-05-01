@@ -62,6 +62,18 @@ describe('chain store', () => {
     })
     expect(c[c.length - 1].id).toMatch(/^[0-9a-f-]{36}$/)
   })
+  it('addSlot appends Compressor with conservative defaults and a fresh id', () => {
+    const before = useSessionStore.getState().chain.length
+    useSessionStore.getState().addSlot('compressor')
+    const c = useSessionStore.getState().chain
+    expect(c.length).toBe(before + 1)
+    expect(c[c.length - 1]).toMatchObject({
+      kind: 'compressor',
+      enabled: true,
+      params: { sustain: 0, attack: 50, ratio: 0, level: 100 },
+    })
+    expect(c[c.length - 1].id).toMatch(/^[0-9a-f-]{36}$/)
+  })
   it('addSlot appends 303 VinylSim with neutral defaults and a fresh id', () => {
     const before = useSessionStore.getState().chain.length
     useSessionStore.getState().addSlot('vinyl303')
