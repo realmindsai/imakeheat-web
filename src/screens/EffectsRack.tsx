@@ -84,7 +84,7 @@ export function EffectsRack() {
             const def = registry.get(slot.kind)
             if (!def) return null
             const Panel = def.Panel
-            const defaultExpanded = true  // always open on mount; echo/reverb only appear when user explicitly adds them
+            const defaultExpanded = slot.kind !== 'echo' && slot.kind !== 'reverb'
             return (
               <SlotCard
                 key={slot.id}

@@ -121,36 +121,34 @@ test('Cassette Sim wow/flutter increases zero-crossing jitter', async ({ page })
   await page.goto('/tests/integration/index.html')
   await expect(page.locator('#status')).toHaveText('ready')
 
-  const [dry, wet] = await Promise.all([
-    page.evaluate(async ({ chain }) => {
-      const sr = 48000
-      const dur = 0.5
-      const n = Math.round(sr * dur)
-      const ch = new Float32Array(n)
-      for (let i = 0; i < n; i++) ch[i] = 0.45 * Math.sin((2 * Math.PI * 440 * i) / sr)
-      return window.__run({
-        kind: 'render',
-        sourcePcm: [Array.from(ch)],
-        sampleRate: sr,
-        chain,
-        trim: { startSec: 0, endSec: dur },
-      })
-    }, { chain: chainCassette({ tone: 50, hiss: 0, ageYears: 0, drive: 0, wowFlutter: 0, catch: 0 }) }),
-    page.evaluate(async ({ chain }) => {
-      const sr = 48000
-      const dur = 0.5
-      const n = Math.round(sr * dur)
-      const ch = new Float32Array(n)
-      for (let i = 0; i < n; i++) ch[i] = 0.45 * Math.sin((2 * Math.PI * 440 * i) / sr)
-      return window.__run({
-        kind: 'render',
-        sourcePcm: [Array.from(ch)],
-        sampleRate: sr,
-        chain,
-        trim: { startSec: 0, endSec: dur },
-      })
-    }, { chain: chainCassette({ tone: 50, hiss: 0, ageYears: 0, drive: 0, wowFlutter: 100, catch: 0 }) }),
-  ])
+  const dry = await page.evaluate(async ({ chain }) => {
+    const sr = 48000
+    const dur = 0.5
+    const n = Math.round(sr * dur)
+    const ch = new Float32Array(n)
+    for (let i = 0; i < n; i++) ch[i] = 0.45 * Math.sin((2 * Math.PI * 440 * i) / sr)
+    return window.__run({
+      kind: 'render',
+      sourcePcm: [Array.from(ch)],
+      sampleRate: sr,
+      chain,
+      trim: { startSec: 0, endSec: dur },
+    })
+  }, { chain: chainCassette({ tone: 50, hiss: 0, ageYears: 0, drive: 0, wowFlutter: 0, catch: 0 }) })
+  const wet = await page.evaluate(async ({ chain }) => {
+    const sr = 48000
+    const dur = 0.5
+    const n = Math.round(sr * dur)
+    const ch = new Float32Array(n)
+    for (let i = 0; i < n; i++) ch[i] = 0.45 * Math.sin((2 * Math.PI * 440 * i) / sr)
+    return window.__run({
+      kind: 'render',
+      sourcePcm: [Array.from(ch)],
+      sampleRate: sr,
+      chain,
+      trim: { startSec: 0, endSec: dur },
+    })
+  }, { chain: chainCassette({ tone: 50, hiss: 0, ageYears: 0, drive: 0, wowFlutter: 100, catch: 0 }) })
 
   expect(crossingJitter(wet.pcm[0])).toBeGreaterThan(crossingJitter(dry.pcm[0]) + 0.2)
 })
@@ -159,36 +157,34 @@ test('Cassette Sim catch introduces intermittent level dents', async ({ page }) 
   await page.goto('/tests/integration/index.html')
   await expect(page.locator('#status')).toHaveText('ready')
 
-  const [dry, wet] = await Promise.all([
-    page.evaluate(async ({ chain }) => {
-      const sr = 48000
-      const dur = 0.8
-      const n = Math.round(sr * dur)
-      const ch = new Float32Array(n)
-      for (let i = 0; i < n; i++) ch[i] = 0.45 * Math.sin((2 * Math.PI * 440 * i) / sr)
-      return window.__run({
-        kind: 'render',
-        sourcePcm: [Array.from(ch)],
-        sampleRate: sr,
-        chain,
-        trim: { startSec: 0, endSec: dur },
-      })
-    }, { chain: chainCassette({ tone: 50, hiss: 0, ageYears: 0, drive: 0, wowFlutter: 0, catch: 0 }) }),
-    page.evaluate(async ({ chain }) => {
-      const sr = 48000
-      const dur = 0.8
-      const n = Math.round(sr * dur)
-      const ch = new Float32Array(n)
-      for (let i = 0; i < n; i++) ch[i] = 0.45 * Math.sin((2 * Math.PI * 440 * i) / sr)
-      return window.__run({
-        kind: 'render',
-        sourcePcm: [Array.from(ch)],
-        sampleRate: sr,
-        chain,
-        trim: { startSec: 0, endSec: dur },
-      })
-    }, { chain: chainCassette({ tone: 50, hiss: 0, ageYears: 0, drive: 0, wowFlutter: 0, catch: 100 }) }),
-  ])
+  const dry = await page.evaluate(async ({ chain }) => {
+    const sr = 48000
+    const dur = 0.8
+    const n = Math.round(sr * dur)
+    const ch = new Float32Array(n)
+    for (let i = 0; i < n; i++) ch[i] = 0.45 * Math.sin((2 * Math.PI * 440 * i) / sr)
+    return window.__run({
+      kind: 'render',
+      sourcePcm: [Array.from(ch)],
+      sampleRate: sr,
+      chain,
+      trim: { startSec: 0, endSec: dur },
+    })
+  }, { chain: chainCassette({ tone: 50, hiss: 0, ageYears: 0, drive: 0, wowFlutter: 0, catch: 0 }) })
+  const wet = await page.evaluate(async ({ chain }) => {
+    const sr = 48000
+    const dur = 0.8
+    const n = Math.round(sr * dur)
+    const ch = new Float32Array(n)
+    for (let i = 0; i < n; i++) ch[i] = 0.45 * Math.sin((2 * Math.PI * 440 * i) / sr)
+    return window.__run({
+      kind: 'render',
+      sourcePcm: [Array.from(ch)],
+      sampleRate: sr,
+      chain,
+      trim: { startSec: 0, endSec: dur },
+    })
+  }, { chain: chainCassette({ tone: 50, hiss: 0, ageYears: 0, drive: 0, wowFlutter: 0, catch: 100 }) })
 
   expect(minWindowRms(wet.pcm[0])).toBeLessThan(minWindowRms(dry.pcm[0]) * 0.85)
 })
