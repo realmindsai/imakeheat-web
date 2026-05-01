@@ -32,6 +32,18 @@ describe('chain store', () => {
     })
     expect(c[c.length - 1].id).toMatch(/^[0-9a-f-]{36}$/)
   })
+  it('addSlot appends Cassette Sim with neutral defaults and a fresh id', () => {
+    const before = useSessionStore.getState().chain.length
+    useSessionStore.getState().addSlot('cassette')
+    const c = useSessionStore.getState().chain
+    expect(c.length).toBe(before + 1)
+    expect(c[c.length - 1]).toMatchObject({
+      kind: 'cassette',
+      enabled: true,
+      params: { tone: 50, hiss: 0, ageYears: 0, drive: 0, wowFlutter: 0, catch: 0 },
+    })
+    expect(c[c.length - 1].id).toMatch(/^[0-9a-f-]{36}$/)
+  })
   it('removeSlot removes by id', () => {
     const id = useSessionStore.getState().chain[0].id
     useSessionStore.getState().removeSlot(id)

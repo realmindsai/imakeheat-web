@@ -43,6 +43,8 @@ function valueLabel(slot: Slot): string {
       return `comp ${slot.params.comp}`
     case 'vinyl404':
       return `freq ${slot.params.frequency}`
+    case 'cassette':
+      return `age ${slot.params.ageYears}y`
   }
 }
 

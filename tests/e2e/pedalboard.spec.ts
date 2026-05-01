@@ -71,6 +71,24 @@ test('+Add 404 VinylSim shows its labeled controls', async ({ page }) => {
   await expect(group.getByText('Wow/flutter')).toBeVisible()
 })
 
+test('+Add Cassette Sim shows its labeled controls', async ({ page }) => {
+  await gotoEffects(page)
+  await page.getByRole('button', { name: '+ Add effect' }).click()
+  await page.getByRole('menuitem', { name: 'Cassette Sim' }).click()
+
+  const group = page.getByRole('group', { name: /Cassette Sim, position 5 of 5/ })
+  await expect(group).toBeVisible()
+  const toggle = group.getByRole('button', { name: /Expand Cassette Sim|Collapse Cassette Sim/ })
+  if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click()
+
+  await expect(group.getByText('Tone', { exact: true })).toBeVisible()
+  await expect(group.getByText('Hiss', { exact: true })).toBeVisible()
+  await expect(group.getByText('Age', { exact: true })).toBeVisible()
+  await expect(group.getByText('Drive', { exact: true })).toBeVisible()
+  await expect(group.getByText('Wow/flutter', { exact: true })).toBeVisible()
+  await expect(group.getByText('Catch', { exact: true })).toBeVisible()
+})
+
 test('× removes a slot', async ({ page }) => {
   await gotoEffects(page)
   await page.getByRole('button', { name: '+ Add effect' }).click()

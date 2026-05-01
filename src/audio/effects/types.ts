@@ -5,7 +5,7 @@ import type { ReactElement } from 'react'
 
 export type EffectKind =
   | 'crusher' | 'srhold' | 'pitch' | 'filter'
-  | 'echo' | 'reverb' | 'vinyl303' | 'vinyl404'
+  | 'echo' | 'reverb' | 'vinyl303' | 'vinyl404' | 'cassette'
 
 export interface SlotBase {
   id: string
@@ -22,6 +22,7 @@ export type Slot =
   | (SlotBase & { kind: 'reverb';  params: { size: number; decay: number; mix: number } })
   | (SlotBase & { kind: 'vinyl303'; params: { comp: number; noise: number; wowFlutter: number; level: number } })
   | (SlotBase & { kind: 'vinyl404'; params: { frequency: number; noise: number; wowFlutter: number } })
+  | (SlotBase & { kind: 'cassette'; params: { tone: number; hiss: number; ageYears: number; drive: number; wowFlutter: number; catch: number } })
 
 export type Chain = Slot[]
 
