@@ -38,6 +38,14 @@ function valueLabel(slot: Slot): string {
     case 'isolator':
       return `L ${slot.params.low}  M ${slot.params.mid}  H ${slot.params.high}`
     case 'equalizer':
+      if (
+        slot.params.lowGain === 0 &&
+        slot.params.midGain === 0 &&
+        slot.params.highGain === 0
+      ) {
+        return 'flat'
+      }
+      return `mid ${slot.params.midGain} dB`
     case 'filterDrive':
     case 'compressor':
     case 'loFi':

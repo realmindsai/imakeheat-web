@@ -24,6 +24,25 @@ describe('chain store', () => {
     })
     expect(c[c.length - 1].id).toMatch(/^[0-9a-f-]{36}$/)
   })
+  it('addSlot appends Equalizer with flat defaults and a fresh id', () => {
+    const before = useSessionStore.getState().chain.length
+    useSessionStore.getState().addSlot('equalizer')
+    const c = useSessionStore.getState().chain
+    expect(c.length).toBe(before + 1)
+    expect(c[c.length - 1]).toMatchObject({
+      kind: 'equalizer',
+      enabled: true,
+      params: {
+        lowGain: 0,
+        midGain: 0,
+        highGain: 0,
+        lowFreq: 80,
+        midFreq: 1000,
+        highFreq: 8000,
+      },
+    })
+    expect(c[c.length - 1].id).toMatch(/^[0-9a-f-]{36}$/)
+  })
   it('addSlot appends 303 VinylSim with neutral defaults and a fresh id', () => {
     const before = useSessionStore.getState().chain.length
     useSessionStore.getState().addSlot('vinyl303')

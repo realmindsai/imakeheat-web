@@ -22,6 +22,25 @@ describe('chain persistence', () => {
     })
   })
 
+  it('addSlot writes Equalizer to localStorage with flat defaults', () => {
+    useSessionStore.getState().addSlot('equalizer')
+    const chain = useSessionStore.getState().chain
+    const persisted = JSON.parse(localStorage.getItem('imakeheat-chain') ?? '{}')
+    expect(persisted.state.chain).toEqual(chain)
+    expect(persisted.state.chain.at(-1)).toMatchObject({
+      kind: 'equalizer',
+      enabled: true,
+      params: {
+        lowGain: 0,
+        midGain: 0,
+        highGain: 0,
+        lowFreq: 80,
+        midFreq: 1000,
+        highFreq: 8000,
+      },
+    })
+  })
+
   it('persisted chain round-trips a 303 VinylSim slot', () => {
     useSessionStore.getState().addSlot('vinyl303')
     const chain = useSessionStore.getState().chain

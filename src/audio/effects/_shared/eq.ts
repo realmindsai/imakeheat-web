@@ -41,6 +41,15 @@ export function assignThreeBandEqGains(
   nodes.high.gain.value = gains.high
 }
 
+export function assignThreeBandEqFreqs(
+  nodes: ThreeBandEqNodes,
+  freqs: { low: number; mid: number; high: number },
+) {
+  nodes.low.frequency.value = freqs.low
+  nodes.mid.frequency.value = freqs.mid
+  nodes.high.frequency.value = freqs.high
+}
+
 export function smoothThreeBandEqGains(
   nodes: ThreeBandEqNodes,
   gains: { low: number; mid: number; high: number },
@@ -49,4 +58,14 @@ export function smoothThreeBandEqGains(
   nodes.low.gain.setTargetAtTime(gains.low, currentTime, 0.01)
   nodes.mid.gain.setTargetAtTime(gains.mid, currentTime, 0.01)
   nodes.high.gain.setTargetAtTime(gains.high, currentTime, 0.01)
+}
+
+export function smoothThreeBandEqFreqs(
+  nodes: ThreeBandEqNodes,
+  freqs: { low: number; mid: number; high: number },
+  currentTime: number,
+) {
+  nodes.low.frequency.setTargetAtTime(freqs.low, currentTime, 0.01)
+  nodes.mid.frequency.setTargetAtTime(freqs.mid, currentTime, 0.01)
+  nodes.high.frequency.setTargetAtTime(freqs.high, currentTime, 0.01)
 }
