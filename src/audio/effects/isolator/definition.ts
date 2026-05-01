@@ -2,7 +2,11 @@
 // ABOUTME: Reuses the shared EQ scaffold so later Phase 1 EQ-style effects can build on the same chain shape.
 
 import { register } from '../_internal'
-import { createThreeBandEq, setThreeBandEqGains } from '../_shared/eq'
+import {
+  assignThreeBandEqGains,
+  createThreeBandEq,
+  smoothThreeBandEqGains,
+} from '../_shared/eq'
 import type { EffectDefinition, EffectNode } from '../types'
 import { IsolatorPanel } from './panel'
 
@@ -15,12 +19,12 @@ const def: EffectDefinition<'isolator'> = {
   isNeutral: (p) => p.low === 0 && p.mid === 0 && p.high === 0,
   build(ctx, params): EffectNode<P> {
     const nodes = createThreeBandEq(ctx, { low: 120, mid: 1000, high: 6000 })
-    setThreeBandEqGains(nodes, params, ctx.currentTime)
+    assignThreeBandEqGains(nodes, params)
     return {
       input: nodes.input,
       output: nodes.output,
       apply(next) {
-        setThreeBandEqGains(nodes, next, ctx.currentTime)
+        smoothThreeBandEqGains(nodes, next, ctx.currentTime)
       },
       dispose() {
         nodes.low.disconnect()

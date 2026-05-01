@@ -1,5 +1,5 @@
 // ABOUTME: Shared native EQ helpers for multi-band effect definitions that reuse the same node topology.
-// ABOUTME: Builds a lowshelf -> peaking -> highshelf chain and updates its gain params with one call.
+// ABOUTME: Builds a lowshelf -> peaking -> highshelf chain and supports both immediate init and smoothed live updates.
 
 export interface ThreeBandEqNodes {
   input: BiquadFilterNode
@@ -32,7 +32,16 @@ export function createThreeBandEq(
   return { input: low, low, mid, high, output: high }
 }
 
-export function setThreeBandEqGains(
+export function assignThreeBandEqGains(
+  nodes: ThreeBandEqNodes,
+  gains: { low: number; mid: number; high: number },
+) {
+  nodes.low.gain.value = gains.low
+  nodes.mid.gain.value = gains.mid
+  nodes.high.gain.value = gains.high
+}
+
+export function smoothThreeBandEqGains(
   nodes: ThreeBandEqNodes,
   gains: { low: number; mid: number; high: number },
   currentTime: number,
