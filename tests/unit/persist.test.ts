@@ -10,11 +10,16 @@ beforeEach(() => {
 })
 
 describe('chain persistence', () => {
-  it('addSlot writes the new chain to localStorage', () => {
-    useSessionStore.getState().addSlot('echo')
-    const before = useSessionStore.getState().chain
+  it('addSlot writes Isolator to localStorage with neutral defaults', () => {
+    useSessionStore.getState().addSlot('isolator')
+    const chain = useSessionStore.getState().chain
     const persisted = JSON.parse(localStorage.getItem('imakeheat-chain') ?? '{}')
-    expect(persisted.state.chain).toEqual(before)
+    expect(persisted.state.chain).toEqual(chain)
+    expect(persisted.state.chain.at(-1)).toMatchObject({
+      kind: 'isolator',
+      enabled: true,
+      params: { low: 0, mid: 0, high: 0 },
+    })
   })
 
   it('persisted chain round-trips a 303 VinylSim slot', () => {

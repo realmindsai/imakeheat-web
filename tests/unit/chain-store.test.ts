@@ -12,12 +12,16 @@ describe('chain store', () => {
     expect(c.map(s => s.kind)).toEqual(['crusher', 'srhold', 'pitch', 'filter'])
     expect(c.every(s => s.enabled)).toBe(true)
   })
-  it('addSlot appends a new slot with default params and a fresh id', () => {
+  it('addSlot appends Isolator with neutral defaults and a fresh id', () => {
     const before = useSessionStore.getState().chain.length
-    useSessionStore.getState().addSlot('echo')
+    useSessionStore.getState().addSlot('isolator')
     const c = useSessionStore.getState().chain
     expect(c.length).toBe(before + 1)
-    expect(c[c.length - 1].kind).toBe('echo')
+    expect(c[c.length - 1]).toMatchObject({
+      kind: 'isolator',
+      enabled: true,
+      params: { low: 0, mid: 0, high: 0 },
+    })
     expect(c[c.length - 1].id).toMatch(/^[0-9a-f-]{36}$/)
   })
   it('addSlot appends 303 VinylSim with neutral defaults and a fresh id', () => {

@@ -5,6 +5,7 @@ import type { ReactElement } from 'react'
 
 export type EffectKind =
   | 'crusher' | 'srhold' | 'pitch' | 'filter'
+  | 'isolator' | 'equalizer' | 'filterDrive' | 'compressor' | 'loFi'
   | 'echo' | 'reverb' | 'vinyl303' | 'vinyl404' | 'cassette'
 
 export interface SlotBase {
@@ -18,6 +19,49 @@ export type Slot =
   | (SlotBase & { kind: 'srhold';  params: { sampleRateHz: number } })
   | (SlotBase & { kind: 'pitch';   params: { semitones: number; speed: number } })
   | (SlotBase & { kind: 'filter';  params: { value: number } })
+  | (SlotBase & { kind: 'isolator'; params: { low: number; mid: number; high: number } })
+  | (SlotBase & {
+      kind: 'equalizer'
+      params: {
+        lowGain: number
+        midGain: number
+        highGain: number
+        lowFreq: number
+        midFreq: number
+        highFreq: number
+      }
+    })
+  | (SlotBase & {
+      kind: 'filterDrive'
+      params: {
+        cutoffHz: number
+        resonance: number
+        drive: number
+        filterType: 'lowpass' | 'highpass'
+        lowFreq: number
+        lowGain: number
+      }
+    })
+  | (SlotBase & {
+      kind: 'compressor'
+      params: {
+        sustain: number
+        attack: number
+        ratio: number
+        level: number
+      }
+    })
+  | (SlotBase & {
+      kind: 'loFi'
+      params: {
+        preFilt: number
+        lofiType: number
+        tone: number
+        cutoffHz: number
+        balance: number
+        level: number
+      }
+    })
   | (SlotBase & { kind: 'echo';    params: { timeMs: number; feedback: number; mix: number } })
   | (SlotBase & { kind: 'reverb';  params: { size: number; decay: number; mix: number } })
   | (SlotBase & { kind: 'vinyl303'; params: { comp: number; noise: number; wowFlutter: number; level: number } })

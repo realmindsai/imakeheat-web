@@ -35,6 +35,13 @@ function valueLabel(slot: Slot): string {
       if (Math.abs(v) < 0.05) return 'neutral'
       return `${v < 0 ? 'LP' : 'HP'} ${Math.round(Math.abs(v) * 100)}%`
     }
+    case 'isolator':
+      return `L ${slot.params.low}  M ${slot.params.mid}  H ${slot.params.high}`
+    case 'equalizer':
+    case 'filterDrive':
+    case 'compressor':
+    case 'loFi':
+      return ''
     case 'echo':
       return `mix ${slot.params.mix.toFixed(2)}`
     case 'reverb':
